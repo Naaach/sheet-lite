@@ -86,10 +86,11 @@ pnpm install
 pnpm test        # vitest
 pnpm typecheck   # tsc --noEmit
 pnpm build       # tsdown -> dist/
-pnpm bench       # size + read benchmark
+pnpm bench       # size + read/write benchmark
+pnpm size        # bundle size gate (fails over budget)
 ```
 
-CI runs on every push/PR (typecheck, tests, build). The docs site is deployed to GitHub Pages.
+CI runs on every push/PR (typecheck, tests, build, size gate, pack). Releases to npm are manual (`release.yml`, dry-run first) and docs + playground deploy to **Cloudflare Pages** — see [`docs/PUBLISHING.md`](docs/PUBLISHING.md).
 
 ## License
 

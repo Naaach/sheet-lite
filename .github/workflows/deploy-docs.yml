@@ -1,0 +1,84 @@
+name: Deploy Docs & Playground to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs-site/**'
+      - 'playground/**'
+      - 'src/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/deploy-docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare Pages
+    runs-on: ubuntu-latest
+    env:
+      # Lets the job skip gracefully (green) until the Cloudflare secrets exist.
+      HAS_CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies (root)
+        run: pnpm install --frozen-lockfile
+
+      # The playground is its own package (own lockfile, Vite devDependency).
+      - name: Install dependencies (playground)
+        run: pnpm --dir playground install --frozen-lockfile
+
+      - name: Build playground
+        run: pnpm --dir playground build
+
+      # Direct upload of prebuilt output.
+      #
+      # `pnpm dlx` instead of cloudflare/wrangler-action: the action tries to
+      # install wrangler with a bare `pnpm add`, which a pnpm-managed repo
+      # rejects with ERR_PNPM_ADDING_TO_ROOT. dlx fetches wrangler in an
+      # isolated store. Requires the repo secrets CLOUDFLARE_API_TOKEN
+      # (Account -> Cloudflare Pages -> Edit) and CLOUDFLARE_ACCOUNT_ID.
+      # The projects and any custom domain are managed in the Cloudflare
+      # dashboard; the create steps below are idempotent best-effort.
+      - name: Ensure Pages projects exist
+        if: env.HAS_CF_TOKEN == 'true'
+        run: |
+          pnpm dlx wrangler@4 pages project create sheet-lite-docs --production-branch=main || true
+          pnpm dlx wrangler@4 pages project create sheet-lite-playground --production-branch=main || true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy docs to Cloudflare Pages
+        if: env.HAS_CF_TOKEN == 'true'
+        run: pnpm dlx wrangler@4 pages deploy docs-site --project-name=sheet-lite-docs --branch=main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy playground to Cloudflare Pages
+        if: env.HAS_CF_TOKEN == 'true'
+        run: pnpm dlx wrangler@4 pages deploy playground/dist --project-name=sheet-lite-playground --branch=main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Skipped (no Cloudflare secrets yet)
+        if: env.HAS_CF_TOKEN != 'true'
+        run: echo "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not set — skipping the deploy. Add them in repo Settings > Secrets and re-run."

@@ -1,0 +1,106 @@
+name: Release to npm
+
+# Manual, opt-in publishing. Nothing here runs on push, so a green CI run can
+# never publish by accident — you trigger it from the Actions tab (or
+# `gh workflow run release.yml`) once you decide to ship.
+#
+# `dry_run` defaults to true, so the first runs only package and validate the
+# tarball. Uncheck it (or `-f dry_run=false`) to publish for real.
+#
+# Requires the repo secret `NPM_TOKEN`. It must be able to CREATE new packages
+# and to bypass 2FA (npm requires 2FA for publishing since 2026); a token
+# without those gets a 403 "You may not perform that action with these
+# credentials." on the first publish. Two valid options:
+#   - Classic token of type "Automation" (simplest), or
+#   - Granular token with "Bypass two-factor authentication" checked,
+#     Permissions = "Read and write (publish and stage)" (NOT stage only) and
+#     Select Packages = "All Packages" (specific packages cannot be created).
+# The token is injected by actions/setup-node below (registry-url +
+# NODE_AUTH_TOKEN), written to a user-level .npmrc outside the repo — pnpm 12
+# ignores ${ENV} placeholders in the repository's own .npmrc.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run only (do not publish to npm)"
+        type: boolean
+        default: true
+      ref:
+        description: "Git ref to release (branch, tag or SHA). Defaults to the current default branch."
+        type: string
+        default: main
+
+permissions:
+  contents: write # publishing tags + creating the GitHub Release
+
+jobs:
+  release:
+    name: Build & publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Configure pnpm
+        run: pnpm config set verify-store-integrity false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Same gates as CI: never publish something that would fail CI.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Size gate
+        run: pnpm size
+
+      - name: Pack (dry-run)
+        run: npm pack --dry-run
+
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run }}
+        run: npm publish --dry-run --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Real publish. Provenance is signed from GitHub Actions OIDC (no
+      # id-token permission needed with npm's own implementation) and requires
+      # the repository to be public.
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag & GitHub Release
+        if: ${{ !inputs.dry_run }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          git tag "v$VERSION" || true
+          git push origin "v$VERSION" || true
+          gh release create "v$VERSION" --title "v$VERSION" --generate-notes || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
