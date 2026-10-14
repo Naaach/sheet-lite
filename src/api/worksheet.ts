@@ -95,10 +95,31 @@ export class Worksheet {
   }
 
   eachRow(callback: (row: Row, rowNumber: number) => void): void {
-    const rowNumbers = new Set<number>();
-    for (const record of this.parsed.cells.values()) rowNumbers.add(record.row);
-    for (const ref of this.changes.keys()) rowNumbers.add(refToCoords(ref).row);
-    for (const n of [...rowNumbers].sort((x, y) => x - y)) callback(this.getRow(n), n);
+    // Group cells by row once (O(cells)) instead of re-scanning the whole cell
+    // map for every row, which made iteration O(rows x cells).
+    const byRow = new Map<number, Cell[]>();
+    for (const record of this.parsed.cells.values()) {
+      let list = byRow.get(record.row);
+      if (!list) {
+        list = [];
+        byRow.set(record.row, list);
+      }
+      list.push(new Cell(this, record.ref));
+    }
+    for (const ref of this.changes.keys()) {
+      if (this.parsed.cells.has(ref)) continue;
+      const { row } = refToCoords(ref);
+      let list = byRow.get(row);
+      if (!list) {
+        list = [];
+        byRow.set(row, list);
+      }
+      list.push(new Cell(this, ref));
+    }
+    for (const n of [...byRow.keys()].sort((x, y) => x - y)) {
+      const cells = byRow.get(n)!.sort((x, y) => x.col - y.col);
+      callback(new Row(this, n, cells), n);
+    }
   }
 
   /** Append a row of values (column A, B, C, …). */
