@@ -167,8 +167,9 @@ Same inputs, interleaved A/B: the v0.3 writer (`fflate.zipSync` over ALL entries
 | **v0.3** ✅ | Styles API (`numFmt`/font/fill) + merges | 29/29 tests; output parses with SheetJS |
 | **runtime** ✅ | Browser / edge (Deno, Workers) adapters; reuse original deflate streams | Raw ZIP layer with verbatim reuse (byte-identical untouched entries; zip64/descriptor rejection); `readBlob`/`toBlob`/`download` + ESM dist verified free of static `node:` imports; 56/56 tests. Workers/Deno example itself not exercised (Blob API smoke-tested on Node) |
 | **stream** ✅ | Streaming reads for large files | Bounded-memory read-only API (`sheet-lite/stream`): 100k × 8 rows at **10.2 MB** live heap vs **673 MB** eager, values identical to the eager reader; same hardening rejections through the streaming path; main bundle kept under budget via a lazy chunk. 81/81 tests |
+| **real-world** 🟡 | Real-file corpus + LibreOffice gate in CI | Infra ready (`test/fixtures/real/`, `test/corpus.test.ts`, `scripts/validate-corpus.mjs`, `pnpm validate:corpus`); 4 real files pass read/edit/no-op. Pending: LibreOffice CI job + more files |
 
-> Milestones are named, not versioned. Published npm versions continue sequentially (`0.3.0` = styles, `0.4.0` ≈ runtime, `0.5.0` ≈ stream). The streaming API is additive and ships from a separate `sheet-lite/stream` subpath so the eager entry stays small.
+> Milestones are named, not versioned. Published npm versions continue sequentially: `0.3.0` = styles; **`0.4.0` = runtime + stream + real-world corpus infrastructure + ZIP data-descriptor support**. The streaming API is additive and ships from a separate `sheet-lite/stream` subpath so the eager entry stays small.
 
 **Explicitly out of scope (for now):** `.xls`/`.xlsb`, encryption, formula evaluation, creating charts/pivots/images/macros (preserved, not created).
 
