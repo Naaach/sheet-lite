@@ -1,8 +1,8 @@
 import { strFromU8 } from 'fflate';
-import type { PartStore } from '../opc/part-store';
 import { resolvePartPath } from '../opc/relationships';
 import { SheetLiteError } from '../zip/errors';
-import { parseXml, child, childrenOf, descendants, textOf } from '../xml/xml';
+import { parseXml, child, childrenOf, descendants, decodeEntities } from '../xml/xml';
+import { XmlPullParser } from '../xml/pull-parser';
 import { isBuiltinDateFormat, isDateFormatCode } from '../model/dates';
 
 export interface SheetRef {
@@ -24,6 +24,11 @@ export interface PackageMeta {
   dateStyleIndexes: Set<number>;
 }
 
+/** Minimal part access: satisfied by `PartStore` and by the streaming reader's small-parts map. */
+export interface PartLookup {
+  get(name: string): Uint8Array | undefined;
+}
+
 function decode(data: Uint8Array): string {
   return strFromU8(data);
 }
@@ -33,7 +38,7 @@ function rootElement(xml: string, name: string) {
   return doc.children.find((n) => n.name === name) ?? doc;
 }
 
-function readRels(store: PartStore, relsPath: string, basePart: string): Map<string, string> {
+function readRels(store: PartLookup, relsPath: string, basePart: string): Map<string, string> {
   const map = new Map<string, string>();
   const data = store.get(relsPath);
   if (!data) return map;
@@ -46,7 +51,51 @@ function readRels(store: PartStore, relsPath: string, basePart: string): Map<str
   return map;
 }
 
-export function readPackageMeta(store: PartStore): PackageMeta {
+/** Decode a shared-strings XML part into the string table (incrementally). */
+function parseSharedStrings(data: Uint8Array, out: string[]): void {
+  const parser = new XmlPullParser();
+  const decoder = new TextDecoder();
+  let inSi = false;
+  let text = '';
+
+  const drain = (): void => {
+    for (;;) {
+      const event = parser.next();
+      if (event === null) return;
+      if (event.kind === 'text') {
+        if (inSi) text += event.text;
+        continue;
+      }
+      if (event.kind === 'open') {
+        if (event.name === 'si') {
+          inSi = true;
+          text = '';
+          if (event.selfClosing) {
+            inSi = false;
+            out.push('');
+          }
+        }
+        continue;
+      }
+      if (event.kind === 'close' && event.name === 'si' && inSi) {
+        inSi = false;
+        out.push(decodeEntities(text));
+        text = '';
+      }
+    }
+  };
+
+  const CHUNK = 1 << 16;
+  for (let at = 0; at < data.length; at += CHUNK) {
+    parser.push(decoder.decode(data.subarray(at, at + CHUNK), { stream: true }));
+    drain();
+  }
+  parser.push(decoder.decode());
+  parser.end();
+  drain();
+}
+
+export function readPackageMeta(store: PartLookup): PackageMeta {
   const workbookData = store.get('xl/workbook.xml');
   if (!workbookData) {
     throw new SheetLiteError('Not an XLSX package: missing xl/workbook.xml', 'NOT_XLSX');
@@ -73,10 +122,7 @@ export function readPackageMeta(store: PartStore): PackageMeta {
 
   const sharedStrings: string[] = [];
   const ssData = store.get('xl/sharedStrings.xml');
-  if (ssData) {
-    const sst = rootElement(decode(ssData), 'sst');
-    for (const si of childrenOf(sst, 'si')) sharedStrings.push(textOf(si));
-  }
+  if (ssData) parseSharedStrings(ssData, sharedStrings);
 
   const cellXfs: number[] = [];
   const numFmts = new Map<number, string>();

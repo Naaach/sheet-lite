@@ -8,7 +8,7 @@ When you open an Excel file, change a value and save, most libraries rebuild the
 
 ## Status
 
-**v0.3 — read, edit and style.**
+**v0.4 — read, edit, style — plus streaming reads for large files.**
 
 - [x] `Workbook.read()` / `readFile()` / `toBuffer()` / `writeFile()`
 - [x] Value reading: strings, numbers, booleans, dates (1900/1904), formulas (cached result), inline & shared strings
@@ -18,7 +18,8 @@ When you open an Excel file, change a value and save, most libraries rebuild the
 - [x] **Merges:** `worksheet.mergeCells('A1:C1')` / `unmergeCells`
 - [x] Patch-only write: if nothing changed, the original bytes are returned verbatim
 - [x] Security by design: path-traversal, entry-count, size and compression-ratio limits
-- [ ] Streaming + browser/edge adapters (roadmap)
+- [x] **Streaming reads** for large files: `sheet-lite/stream` (read-only) walks rows with a bounded memory ceiling — ~10 MB instead of ~673 MB for a 100k × 8 sheet
+- [x] Browser/edge adapters: `readBlob` / `toBlob` / `download`
 
 ## Install
 
@@ -49,13 +50,37 @@ await wb.writeFile('./report-edited.xlsx');
 // data validations, conditional formatting, images and other parts stay intact
 ```
 
+## Streaming large files
+
+For files too big to hold in memory, the **read-only** streaming entry point
+walks rows one at a time (it never patches/writes):
+
+```ts
+import { StreamingWorkbook } from 'sheet-lite/stream';
+
+const wb = await StreamingWorkbook.open('./huge.xlsx'); // Node file path
+// ...or an in-memory buffer: StreamingWorkbook.open(bytes)
+for (const sheet of wb.sheets) console.log(sheet.name, sheet.sheetId);
+
+for await (const row of wb.getSheet('Data')!.readRows()) {
+  // row.number; row.cells = [{ ref, row, col, value, type }]
+  for (const cell of row.cells) console.log(cell.ref, cell.value, cell.type);
+}
+await wb.close();
+```
+
+`Workbook.openStream(path)` (main entry) is a lazy alias that loads the
+streaming chunk on demand. Values and types are **identical to the eager
+reader**; the difference is memory: a 100 000 × 8 sheet streams in **~10 MB**
+of live heap versus **~673 MB** for `Workbook.read` (run `pnpm bench:stream`).
+
 ## Benchmark
 
 Generated a 5000 × 8 workbook with ExcelJS and read it back:
 
 | Library | Read (median) | Published size (gzip, incl. deps) | Transitive deps |
 |---|---|---|---|
-| **sheet-lite** | **149 ms** | **~23.9 kB** (12.1 kB + fflate 11.8 kB) | **0** |
+| **sheet-lite** | **149 ms** | **~31 kB** (19.5 kB main entry + fflate 11.8 kB; streaming adds ~6 kB on demand) | **0** |
 | ExcelJS | 192 ms | 249.9 kB | 9 |
 | SheetJS (`xlsx`) | 218 ms | 136.4 kB | 7 |
 
@@ -70,7 +95,8 @@ Run it yourself: `pnpm bench`
 - Charts, pivot tables, images, comments and conditional formatting are **preserved, not created**.
 - No `.xls` / `.xlsb`, no encryption, no CSV.
 - No formula evaluation (cached results only — same as ExcelJS and SheetJS).
-- No streaming reads yet: large files are loaded fully in memory.
+- **Streaming mode is read-only.** `sheet-lite/stream` (and `Workbook.openStream`) reads rows with bounded memory but cannot patch or write; editing needs the eager `Workbook`. Streaming reads `sharedStrings.xml` into memory (the string table, not a DOM), so sheets with millions of *unique* strings are bounded by that table, not by the row count. `ReadableStream` input is not supported (ZIP has no seeking and the EOCD is at the end) — pass a Node file path or a buffer.
+- `Workbook.read` is eager: the whole archive is inflated and the worksheet is parsed into memory. Use streaming for large files.
 
 ## Acknowledgements & legal
 
@@ -87,6 +113,7 @@ pnpm test        # vitest
 pnpm typecheck   # tsc --noEmit
 pnpm build       # tsdown -> dist/
 pnpm bench       # size + read/write benchmark
+pnpm bench:stream # eager vs streaming memory/time benchmark
 pnpm size        # bundle size gate (fails over budget)
 ```
 

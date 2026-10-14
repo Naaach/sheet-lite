@@ -28,8 +28,8 @@ import process from 'node:process';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const NPM = 'npm'; // spawned through a shell so npm.cmd also works on Windows
 
-/** The exact, complete set of paths allowed in the published tarball. */
-const EXPECTED_FILES = new Set([
+/** Entry artifacts that MUST be in every published tarball. */
+const REQUIRED_FILES = new Set([
   'package.json',
   'README.md',
   'LICENSE',
@@ -39,7 +39,19 @@ const EXPECTED_FILES = new Set([
   'dist/index.cjs.map',
   'dist/index.d.mts',
   'dist/index.d.cts',
+  // Streaming entry point (`sheet-lite/stream`). The tiny re-export modules
+  // have no sourcemap of their own (their code lives in the shared chunks).
+  'dist/stream.mjs',
+  'dist/stream.cjs',
+  'dist/stream.d.mts',
+  'dist/stream.d.cts',
 ]);
+
+/**
+ * The build is code-split, so it also emits hashed shared chunks. These are
+ * allowed as long as they are ESM/CJS/types/sourcemap artifacts inside dist/.
+ */
+const ALLOWED_CHUNK = /^dist\/[^/]+\.(?:mjs|cjs|d\.mts|d\.cts)(?:\.map)?$/;
 
 /** Defense in depth: nothing matching these may ever appear in the tarball. */
 const FORBIDDEN = [
@@ -149,9 +161,9 @@ if (!parsed || !Array.isArray(parsed) || !parsed[0]) {
   for (const p of paths) {
     if (FORBIDDEN.some((m) => p.startsWith(m) || p === m)) fail(`forbidden path in tarball: ${p}`);
   }
-  const missing = [...EXPECTED_FILES].filter((p) => !actual.has(p));
-  const unexpected = paths.filter((p) => !EXPECTED_FILES.has(p));
-  if (missing.length === 0) ok('all 9 expected files present');
+  const missing = [...REQUIRED_FILES].filter((p) => !actual.has(p));
+  const unexpected = paths.filter((p) => !REQUIRED_FILES.has(p) && !ALLOWED_CHUNK.test(p));
+  if (missing.length === 0) ok(`all ${REQUIRED_FILES.size} required files present`);
   else fail(`missing from tarball: ${missing.join(', ')}`);
   if (unexpected.length === 0) ok('no unexpected files in tarball');
   else fail(`unexpected files in tarball: ${unexpected.join(', ')}`);
@@ -161,7 +173,7 @@ if (!parsed || !Array.isArray(parsed) || !parsed[0]) {
 
   const kb = (info.size / 1024).toFixed(1);
   const ukb = (info.unpackedSize / 1024).toFixed(1);
-  if (paths.length === EXPECTED_FILES.size) ok(`entryCount: ${info.entryCount}, packed ${kb} kB, unpacked ${ukb} kB`);
+  ok(`entryCount: ${info.entryCount}, packed ${kb} kB, unpacked ${ukb} kB`);
 }
 
 // 4) Registry availability of name@version ----------------------------------------------

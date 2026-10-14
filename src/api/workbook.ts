@@ -5,6 +5,8 @@ import { SheetLiteError } from '../zip/errors';
 import { parseContentTypes, type ContentTypes } from '../opc/content-types';
 import { readPackageMeta, type PackageMeta } from '../reader/package-reader';
 import { StyleRegistry } from '../writer/style-registry';
+import type { StreamingWorkbook, StreamInput } from './streaming';
+import type { ReadLimits } from '../zip/raw';
 import { Worksheet } from './worksheet';
 
 function toUint8(input: Uint8Array | ArrayBuffer | ArrayBufferView): Uint8Array {
@@ -54,6 +56,19 @@ export class Workbook {
    */
   static async readBlob(blob: Blob): Promise<Workbook> {
     return Workbook.read(await blob.arrayBuffer());
+  }
+
+  /**
+   * Streaming, READ-ONLY open (Node file path, or an in-memory buffer).
+   *
+   * Reads only the small package parts up front and lets you iterate rows one
+   * at a time with bounded memory — see `StreamingWorkbook` in the
+   * `sheet-lite/stream` entry point, which is loaded on demand here.
+   * Editing requires the eager `Workbook.read`/`readFile`/`readBlob` APIs.
+   */
+  static async openStream(input: StreamInput, limits?: Partial<ReadLimits>): Promise<StreamingWorkbook> {
+    const { StreamingWorkbook: SW } = await import('./streaming');
+    return SW.open(input, limits);
   }
 
   async writeFile(path: string): Promise<void> {

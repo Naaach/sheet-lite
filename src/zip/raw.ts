@@ -8,10 +8,11 @@
  * DOS timestamps) lives here and is dependency-free; only the DEFLATE codec
  * itself comes from fflate (which this package already depends on).
  *
- * Supported on read and write: method 0 (stored) and method 8 (deflate).
+ * Supported on read and write: method 0 (stored) and method 8 (deflate), and
+ * data descriptors (general purpose flag bit 3 — the central directory carries
+ * the real CRC/sizes, and the descriptor is dropped when re-serializing).
  * Deliberately rejected with a clear `SheetLiteError` code instead of
- * crashing: zip64, data descriptors (general purpose flag bit 3),
- * encryption (bit 0) and multi-disk archives.
+ * crashing: zip64, encryption (bit 0) and multi-disk archives.
  */
 import { deflateSync, inflateSync } from 'fflate';
 import { ZipSecurityError, ZipUnsupportedError } from './errors';
@@ -48,8 +49,9 @@ const ZIP64_LOCATOR_SIG = 0x0706_4b50;
 const FLAG_ENCRYPTED = 0x0001;
 const FLAG_DATA_DESCRIPTOR = 0x0008;
 
-const LOCAL_FIXED = 30; // local file header, fixed part
-const CENTRAL_FIXED = 46; // central directory record, fixed part
+/** Fixed part sizes, in bytes. */
+export const LOCAL_FIXED = 30; // local file header
+export const CENTRAL_FIXED = 46; // central directory record, fixed part
 const EOCD_FIXED = 22;
 
 const EMPTY = new Uint8Array(0);
@@ -103,10 +105,16 @@ const CRC_TABLE = /* @__PURE__ */ (() => {
   return flat;
 })();
 
-/** CRC-32 checksum of a buffer (the checksum ZIP stores per entry). */
-export function crc32(data: Uint8Array): number {
+/**
+ * CRC-32 checksum of a buffer (the checksum ZIP stores per entry).
+ *
+ * Streams can compute it incrementally: `crc32(b, crc32(a))` equals
+ * `crc32(concat(a, b))` — pass the previous result as the `previous` argument
+ * (0 for the first chunk).
+ */
+export function crc32(data: Uint8Array, previous = 0): number {
   const t = CRC_TABLE;
-  let c = 0xffff_ffff;
+  let c = (previous ^ 0xffff_ffff) >>> 0;
   const len = data.length;
   let i = 0;
   while (i + 8 <= len) {
@@ -180,15 +188,27 @@ function findEocd(raw: Uint8Array, dv: DataView): number {
   throw new ZipSecurityError('Unable to read ZIP archive: end of central directory record not found');
 }
 
+/** End-of-central-directory information, validated (multi-disk / zip64 already rejected). */
+export interface EocdInfo {
+  /** Index of the EOCD record within the provided buffer. */
+  eocdPos: number;
+  /** Absolute offset of the central directory in the archive. */
+  centralDirOffset: number;
+  centralDirSize: number;
+  totalEntries: number;
+  comment: Uint8Array;
+}
+
 /**
- * Parse a ZIP file's structure without inflating anything yet:
- * EOCD -> central directory records -> local header bounds.
- * Enforces entry-count and per-entry/total size limits BEFORE decompression.
+ * Read and validate the end-of-central-directory record. `raw` must end at the
+ * end of the archive; `base` is the absolute archive offset of `raw[0]` (0 for a
+ * whole-file buffer, `size - raw.length` when only the tail was read).
+ *
+ * Rejects multi-disk archives and every zip64 marker with a `ZipUnsupportedError`
+ * before any entry is touched. Shared by the eager (`parseRawZip`) and the
+ * streaming (`zip/stream.ts`) readers so the two can never disagree.
  */
-function parseStructure(
-  raw: Uint8Array,
-  lim: ReadLimits,
-): { records: CentralRecord[]; prefix: Uint8Array; comment: Uint8Array } {
+export function readEocd(raw: Uint8Array, base = 0): EocdInfo {
   const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const eocdPos = findEocd(raw, dv);
 
@@ -215,18 +235,61 @@ function parseStructure(
   if (eocdPos >= 20 && dv.getUint32(eocdPos - 20, true) === ZIP64_LOCATOR_SIG) {
     throw new ZipUnsupportedError('ZIP feature not supported: zip64 archives are not supported (zip64 end-of-central-directory locator found)');
   }
-  if (centralDirOffset + centralDirSize > eocdPos) {
+  const centralDirRel = centralDirOffset - base;
+  if (centralDirRel < 0 || centralDirRel + centralDirSize > eocdPos) {
     throw new ZipSecurityError('Unable to read ZIP archive: central directory out of bounds');
   }
 
+  return { eocdPos, centralDirOffset, centralDirSize, totalEntries, comment };
+}
+
+/**
+ * A validated central-directory entry: metadata only, no inflated bytes.
+ * This is the common currency between the eager reader (which additionally
+ * attaches the raw byte ranges for verbatim reuse) and the streaming reader.
+ */
+export interface ZipDirEntry {
+  name: string;
+  method: 0 | 8;
+  dosTime: number;
+  dosDate: number;
+  crc32: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  /** Absolute offset of the entry's local file header. */
+  localOffset: number;
+  /** Byte range of the central-directory record within the central-directory buffer. */
+  centralStart: number;
+  centralEnd: number;
+  /** True when the local header uses a trailing data descriptor (flag bit 3). */
+  dataDescriptor?: boolean;
+  // Populated by the eager path only (verbatim reuse + bounds checks).
+  compressed?: Uint8Array;
+  localBytes?: Uint8Array;
+  centralBytes?: Uint8Array;
+}
+
+/**
+ * Parse and validate central-directory records from `cd` (the raw bytes of the
+ * central directory). Enforces the same structural, traversal, entry-count,
+ * per-entry-size and total-size limits as the eager reader BEFORE any inflation.
+ * Names that fail the traversal check are collected in `rejected`; the callers
+ * turn a non-empty list into a `ZipSecurityError`.
+ */
+export function parseCentralDirectory(
+  cd: Uint8Array,
+  totalEntries: number,
+  lim: ReadLimits,
+): { entries: ZipDirEntry[]; rejected: string[] } {
+  const dv = new DataView(cd.buffer, cd.byteOffset, cd.byteLength);
   const decoder = new TextDecoder('utf-8');
-  const records: CentralRecord[] = [];
+  const entries: ZipDirEntry[] = [];
   const rejected: string[] = [];
-  let recPos = centralDirOffset;
+  let recPos = 0;
   let declaredTotal = 0;
 
   for (let index = 0; index < totalEntries; index += 1) {
-    if (recPos + CENTRAL_FIXED > eocdPos || dv.getUint32(recPos, true) !== CENTRAL_SIG) {
+    if (recPos + CENTRAL_FIXED > cd.length || dv.getUint32(recPos, true) !== CENTRAL_SIG) {
       throw new ZipSecurityError('Unable to read ZIP archive: corrupt central directory');
     }
     const recordStart = recPos;
@@ -244,10 +307,10 @@ function parseStructure(
     const localOffset = dv.getUint32(recPos + 42, true);
     recPos += CENTRAL_FIXED + nameLen + extraLen + commentLen;
 
-    if (recPos > eocdPos) {
+    if (recPos > cd.length) {
       throw new ZipSecurityError('Unable to read ZIP archive: central directory record out of bounds');
     }
-    const name = decoder.decode(raw.subarray(recordStart + CENTRAL_FIXED, recordStart + CENTRAL_FIXED + nameLen));
+    const name = decoder.decode(cd.subarray(recordStart + CENTRAL_FIXED, recordStart + CENTRAL_FIXED + nameLen));
 
     if (name.endsWith('/')) continue; // directory marker: not a part, skipped
     if (diskStart === 0xffff || compressedSize === 0xffff_ffff || uncompressedSize === 0xffff_ffff || localOffset === 0xffff_ffff) {
@@ -256,9 +319,11 @@ function parseStructure(
     if (flags & FLAG_ENCRYPTED) {
       throw new ZipUnsupportedError(`ZIP feature not supported: entry ${JSON.stringify(name)} is encrypted`);
     }
-    if (flags & FLAG_DATA_DESCRIPTOR) {
-      throw new ZipUnsupportedError(`ZIP feature not supported: entry ${JSON.stringify(name)} uses data descriptors (general purpose flag bit 3)`);
-    }
+    // Data descriptors (general purpose flag bit 3) are supported: the central
+    // directory always carries the real CRC and sizes, and the descriptor bytes
+    // are dropped when the entry is re-serialized (its local header is normalized
+    // in parseStructure). Streaming ZIP writers emit them routinely.
+    const dataDescriptor = (flags & FLAG_DATA_DESCRIPTOR) !== 0;
     if (method !== 0 && method !== 8) {
       throw new ZipUnsupportedError(`ZIP feature not supported: entry ${JSON.stringify(name)} uses compression method ${method} (only stored and deflate are supported)`);
     }
@@ -275,22 +340,69 @@ function parseStructure(
     if (declaredTotal > lim.maxTotalUncompressed) {
       throw new ZipSecurityError(`Total decompressed size exceeds limit (${declaredTotal} > ${lim.maxTotalUncompressed})`);
     }
-    if (records.length >= lim.maxEntries) {
+    if (entries.length >= lim.maxEntries) {
       throw new ZipSecurityError(`Archive has too many entries (> ${lim.maxEntries})`);
     }
 
-    records.push({
+    entries.push({
       name: normalizeName(name),
-      method,
+      method: method as 0 | 8,
       dosTime,
       dosDate,
-      crc,
+      crc32: crc,
       compressedSize,
       uncompressedSize,
       localOffset,
-      centralBytes: raw.subarray(recordStart, recPos),
+      centralStart: recordStart,
+      centralEnd: recPos,
+      dataDescriptor,
     });
   }
+
+  return { entries, rejected };
+}
+
+/**
+ * Validate an entry's local file header (the 30 fixed bytes read at
+ * `localOffset`) and return the absolute offset of its compressed data.
+ * Shared by the eager and streaming readers.
+ */
+export function resolveEntryDataOffset(
+  localHeader: Uint8Array,
+  localOffset: number,
+  archiveSize: number,
+  name: string,
+  compressedSize: number,
+): number {
+  if (localHeader.length < LOCAL_FIXED) {
+    throw new ZipSecurityError(`Unable to read ZIP archive: corrupt local header for ${JSON.stringify(name)}`);
+  }
+  const dv = new DataView(localHeader.buffer, localHeader.byteOffset, localHeader.byteLength);
+  if (dv.getUint32(0, true) !== LOCAL_SIG) {
+    throw new ZipSecurityError(`Unable to read ZIP archive: corrupt local header for ${JSON.stringify(name)}`);
+  }
+  const localNameLen = dv.getUint16(26, true);
+  const localExtraLen = dv.getUint16(28, true);
+  const dataStart = localOffset + LOCAL_FIXED + localNameLen + localExtraLen;
+  const dataEnd = dataStart + compressedSize;
+  if (dataStart > archiveSize || dataEnd > archiveSize) {
+    throw new ZipSecurityError(`Unable to read ZIP archive: data of ${JSON.stringify(name)} out of bounds`);
+  }
+  return dataStart;
+}
+
+/**
+ * Parse a ZIP file's structure without inflating anything yet:
+ * EOCD -> central directory records -> local header bounds.
+ * Enforces entry-count and per-entry/total size limits BEFORE decompression.
+ */
+function parseStructure(
+  raw: Uint8Array,
+  lim: ReadLimits,
+): { records: ZipDirEntry[]; prefix: Uint8Array; comment: Uint8Array } {
+  const { centralDirOffset, centralDirSize, totalEntries, comment } = readEocd(raw, 0);
+  const cd = raw.subarray(centralDirOffset, centralDirOffset + centralDirSize);
+  const { entries, rejected } = parseCentralDirectory(cd, totalEntries, lim);
 
   if (rejected.length > 0) {
     throw new ZipSecurityError(`Unsafe entry rejected: ${JSON.stringify(rejected[0])}`);
@@ -298,38 +410,41 @@ function parseStructure(
 
   // Locate each entry's data via its local file header (still no inflation).
   let minLocalOffset = raw.length;
-  for (const record of records) {
-    const at = record.localOffset;
-    if (at + LOCAL_FIXED > raw.length || dv.getUint32(at, true) !== LOCAL_SIG) {
-      throw new ZipSecurityError(`Unable to read ZIP archive: corrupt local header for ${JSON.stringify(record.name)}`);
+  for (const entry of entries) {
+    const at = entry.localOffset;
+    const dataStart = resolveEntryDataOffset(
+      raw.subarray(at, at + LOCAL_FIXED),
+      at,
+      raw.length,
+      entry.name,
+      entry.compressedSize,
+    );
+    const dataEnd = dataStart + entry.compressedSize;
+    entry.compressed = raw.subarray(dataStart, dataEnd);
+    if (entry.dataDescriptor) {
+      // Normalize a bit-3 entry: drop the trailing data descriptor and write the
+      // real CRC/sizes into the local header, clearing flag bit 3 so the rebuilt
+      // archive is self-consistent (readers that trust the local header work).
+      const local = raw.slice(at, dataEnd);
+      const ldv = new DataView(local.buffer, local.byteOffset, local.byteLength);
+      ldv.setUint16(6, ldv.getUint16(6, true) & ~FLAG_DATA_DESCRIPTOR, true);
+      ldv.setUint32(14, entry.crc32, true);
+      ldv.setUint32(18, entry.compressedSize, true);
+      ldv.setUint32(22, entry.uncompressedSize, true);
+      entry.localBytes = local;
+
+      const central = cd.slice(entry.centralStart, entry.centralEnd);
+      const cdv = new DataView(central.buffer, central.byteOffset, central.byteLength);
+      cdv.setUint16(8, cdv.getUint16(8, true) & ~FLAG_DATA_DESCRIPTOR, true);
+      entry.centralBytes = central;
+    } else {
+      entry.localBytes = raw.subarray(at, dataEnd);
+      entry.centralBytes = cd.subarray(entry.centralStart, entry.centralEnd);
     }
-    const localNameLen = dv.getUint16(at + 26, true);
-    const localExtraLen = dv.getUint16(at + 28, true);
-    const dataStart = at + LOCAL_FIXED + localNameLen + localExtraLen;
-    const dataEnd = dataStart + record.compressedSize;
-    if (dataStart > raw.length || dataEnd > raw.length) {
-      throw new ZipSecurityError(`Unable to read ZIP archive: data of ${JSON.stringify(record.name)} out of bounds`);
-    }
-    record.compressed = raw.subarray(dataStart, dataEnd);
-    record.localBytes = raw.subarray(at, dataEnd);
     if (at < minLocalOffset) minLocalOffset = at;
   }
 
-  return { records, prefix: raw.subarray(0, minLocalOffset), comment };
-}
-
-interface CentralRecord {
-  name: string;
-  method: number;
-  dosTime: number;
-  dosDate: number;
-  crc: number;
-  compressedSize: number;
-  uncompressedSize: number;
-  localOffset: number;
-  centralBytes: Uint8Array;
-  compressed?: Uint8Array;
-  localBytes?: Uint8Array;
+  return { records: entries, prefix: raw.subarray(0, minLocalOffset), comment };
 }
 
 /**
@@ -373,7 +488,7 @@ export function parseRawZip(
     if (data.length !== record.uncompressedSize) {
       throw new ZipSecurityError(`Unable to read ZIP archive: size mismatch in ${JSON.stringify(record.name)} (${data.length} != ${record.uncompressedSize})`);
     }
-    if (crc32(data) !== record.crc) {
+    if (crc32(data) !== record.crc32) {
       throw new ZipSecurityError(`Unable to read ZIP archive: CRC mismatch in ${JSON.stringify(record.name)}`);
     }
     if (data.length > lim.maxEntryUncompressed) {
@@ -389,10 +504,10 @@ export function parseRawZip(
       source: {
         data,
         compressed,
-        crc32: record.crc,
-        method: record.method as 0 | 8,
+        crc32: record.crc32,
+        method: record.method,
         localBytes: record.localBytes!,
-        centralBytes: record.centralBytes,
+        centralBytes: record.centralBytes!,
       },
     });
   }

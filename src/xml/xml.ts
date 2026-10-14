@@ -37,7 +37,7 @@ function makeNode(name: string): XmlNode {
   };
 }
 
-function parseAttrs(source: string): Record<string, string> {
+export function parseAttrs(source: string): Record<string, string> {
   const attrs: Record<string, string> = {};
   const re = /([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
   let match: RegExpExecArray | null;

@@ -158,7 +158,7 @@ describe('runtime — raw ZIP layer (verbatim reuse)', () => {
     expectZipUnsupported(() => readZip(patched3), /locator/);
   });
 
-  it('rejects data descriptors (general purpose flag bit 3) with a clear error code', () => {
+  it('accepts data descriptors (general purpose flag bit 3)', () => {
     const base = makeMinimalXlsx();
     const patched = new Uint8Array(base);
     const dv = new DataView(patched.buffer);
@@ -175,7 +175,10 @@ describe('runtime — raw ZIP layer (verbatim reuse)', () => {
       dv.setUint16(localOffset + 6, dv.getUint16(localOffset + 6, true) | 0x0008, true); // local flags
       pos += 46 + nameLen + extraLen + commentLen;
     }
-    expectZipUnsupported(() => readZip(patched), /data descriptor/i);
+    // Streaming ZIP writers set bit 3 routinely; the central directory still
+    // carries the real CRC/sizes, so the archive is read normally.
+    const archive = readZip(patched);
+    expect(new TextDecoder().decode(archive.byName.get('xl/workbook.xml')!.data)).toContain('<workbook');
   });
 
   it('rejects encrypted entries and unknown compression methods', () => {

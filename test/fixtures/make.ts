@@ -68,7 +68,7 @@ export function makeMinimalXlsx(): Uint8Array {
 }
 
 /** Build a package with a custom worksheet part (for edge-case tests). */
-export function makeXlsxWithSheet(sheetXml: string): Uint8Array {
+export function makeXlsxWithSheet(sheetXml: string, options: { level?: 0 | 6 } = {}): Uint8Array {
   return zipSync(
     {
       '[Content_Types].xml': strToU8(CONTENT_TYPES),
@@ -80,7 +80,7 @@ export function makeXlsxWithSheet(sheetXml: string): Uint8Array {
       'xl/worksheets/sheet1.xml': strToU8(sheetXml),
       'xl/styles.xml': strToU8(STYLES),
     },
-    { level: 6 },
+    { level: options.level ?? 6 },
   );
 }
 

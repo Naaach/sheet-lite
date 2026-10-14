@@ -29,10 +29,18 @@ beforeAll(() => {
 
 describe('runtime — ESM dist is browser/edge safe', () => {
   it('contains no static `node:` imports (filesystem stays lazy)', () => {
-    const content = readFileSync(distPath, 'utf8');
-    expect(content).not.toMatch(/from\s*["']node:/);
-    expect(content).not.toMatch(/require\(\s*["']node:/);
+    // The build is code-split (main entry + `sheet-lite/stream`), so scan every
+    // ESM artifact — a static `node:` import hiding in a shared chunk would
+    // break browser/edge bundling just the same.
+    const esm = readdirSync(`${root}dist`).filter((name) => name.endsWith('.mjs'));
+    expect(esm.length).toBeGreaterThan(0);
+    for (const name of esm) {
+      const content = readFileSync(`${root}dist/${name}`, 'utf8');
+      expect(content, `${name} has a static node: import`).not.toMatch(/from\s*["']node:/);
+      expect(content, `${name} has a static node: require`).not.toMatch(/require\(\s*["']node:/);
+    }
     // The filesystem helpers must be reachable only through dynamic import.
-    expect(content).toMatch(/import\(\s*["']node:fs\/promises["']\s*\)/);
+    const index = readFileSync(distPath, 'utf8');
+    expect(index).toMatch(/import\(\s*["']node:fs\/promises["']\s*\)/);
   });
 });

@@ -16,6 +16,11 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
     },
+    "./stream": {
+      "types": "./dist/stream.d.mts",
+      "import": "./dist/stream.mjs",
+      "require": "./dist/stream.cjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -32,7 +37,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "bench": "tsdown && node scripts/bench.mjs",
+    "bench:stream": "tsdown && node --expose-gc scripts/bench-stream.mjs",
     "size": "node scripts/size.mjs",
+    "validate:corpus": "tsdown && node scripts/validate-corpus.mjs",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "pnpm build && pnpm test"
   },

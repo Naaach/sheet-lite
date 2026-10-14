@@ -91,19 +91,44 @@ Runtime: Node (fs) + Browser (Blob)    <- TS, ESM + CJS
 - [x] **Browser / edge adapters on `Workbook`:** `readBlob(blob)`, `toBlob()`, `download(filename)` (browser only, throws `ENV_UNSUPPORTED` elsewhere). `node:fs` stays lazy; the ESM dist contains no static `node:` references (verified by a test).
 - [x] Tests: no-op whole-file byte-identity via the raw path, per-entry verbatim reuse after an edit (independent central-directory walker), stored+deflate archives, zip64 / data-descriptor / encrypted / CRC-mismatch rejection, Blob adapters, dist scan.
 
+### Stream milestone — bounded-memory reads
+
+- [x] **Streaming ZIP layer** (`src/zip/stream.ts`): random-access `ByteSource` (Node file handle, or an in-memory buffer) + `readZipDirectory()` / `streamEntryChunks()`. It reuses the SAME structural parser as the eager path (`readEocd` / `parseCentralDirectory` / `resolveEntryDataOffset` in `zip/raw.ts`), so every structural hardening rule — zip64, encryption, multi-disk, traversal names, entry-count / per-entry / total-size and compression-ratio limits — rejects **identically, before any inflation**, and features `raw.ts` supports (stored + deflate, data-descriptor entries via the central-directory CRC/sizes) behave the same. Entries are inflated with fflate's push-based `Inflate` in 64 KiB compressed chunks; every streamed byte is CRC-32 verified and a stream that produces more than its declared size is aborted.
+- [x] **Incremental XML reader** (`src/xml/pull-parser.ts` + `src/reader/stream-sheet.ts`): a push/pull tokenizer that decodes one `<row>` at a time with the SAME value rules as the eager reader (shared / inline / formula strings, numbers, dates 1900/1904, booleans, errors, formulas with cached result, positional cells). Only the current row is ever materialized.
+- [x] **Shared strings parsed incrementally too** (`reader/package-reader.ts`): no DOM, so a large `sharedStrings.xml` no longer spikes memory (the string table itself is still held in memory while streaming — see limitations).
+- [x] **Public API**: `StreamingWorkbook` / `StreamingSheet` in the separate **`sheet-lite/stream` entry point**, plus `Workbook.openStream(...)` on the main entry (a lazy `import()` of the streaming chunk). `workbook.sheets` lists name/id; `sheet.readRows()` returns an `AsyncGenerator<StreamRow>` yielding `{ number, cells: [{ ref, row, col, value, type }] }`. Inputs: Node file path or in-memory buffer. **Read-only** — streaming has no patch/write path.
+- [x] **Kept out of the main bundle**: streaming ships as `dist/stream.mjs` + a lazy chunk; `scripts/size.mjs` now gates the static import graph of `index.mjs` and reports lazy chunks separately.
+- [x] Tests (`test/stream.test.ts`): exact value/type parity with the eager reader (generated + ExcelJS files, all value kinds incl. dates, a formula, rich-text shared strings), every structural hardening rejection through the streaming path plus data-descriptor parity, CRC-32 rejection, bounded parser buffer, incremental decompression, and a memory gate with forced GC.
+
+### Stream benchmark — eager vs streaming (100 000 × 8 worksheet, ExcelJS)
+
+Measured with `pnpm bench:stream`; each phase runs in its own fresh node process (`node --expose-gc`), Node 24 / Windows. File: 4.5 MB compressed; worksheet part **30.5 MB** inflated; sharedStrings 4.8 MB inflated.
+
+| Metric | Eager (`Workbook.read`) | Streaming (`StreamingWorkbook`) |
+|---|---|---|
+| Peak heap (sampled) | 673.0 MB | **19.0 MB** |
+| Live heap (after GC) | 673.0 MB (retained) | **10.2 MB** |
+| Read / walk time | 2.87 s | 3.21 s |
+| Cells streamed | 800 000 | 800 000 |
+
+The streaming reader holds only a 64 KiB compressed chunk, fflate's 32 KiB window, a few output chunks, the current row and the shared-string table, so its live heap stays bounded regardless of file size (**~66× smaller** here). Note: eager `Worksheet.eachRow()` is quadratic today and is excluded from the eager timing — the eager cost measured is `Workbook.read`, which is also where the memory goes.
+
 ### Verification (executed)
 
 | Check | Result |
 |---|---|
-| `pnpm test` | **56/56 passing** (12 files; incl. 35 pre-existing tests unchanged) |
+| `pnpm test` | **81/81 passing** (15 files; includes the 56 pre-existing tests and the sibling data-descriptor/corpus suites) |
 | `pnpm typecheck` (TS 7) | clean |
-| `pnpm build` (`tsdown`) | ESM 57.3 kB / **gzip 16.6 kB** (excl. `fflate`; raw ZIP layer adds ~4 kB gzip) |
-| ESM dist static-`node:` scan | clean (`dist/index.mjs` has no `from "node:` / `require("node:`; only lazy `import("node:fs/promises")`) |
+| `pnpm build` (`tsdown`, code-split) | ESM main graph **19.5 kB gzip** (`index.mjs` 8.7 + shared chunk 10.8; budget 20 kB); streaming chunk 5.9 kB gzip + `stream.mjs` 0.2 kB, loaded on demand (not gated) |
+| `pnpm size` | ok (main entry under the 20 kB gzip budget) |
+| `pnpm bench:stream` | 100k × 8: eager 673 MB vs streaming 10.2 MB live heap (see table above) |
+| ESM dist static-`node:` scan | clean across every `dist/*.mjs` chunk (only lazy `import("node:fs/promises")`) |
 | No-op round-trip | `Workbook.read(f).toBuffer()` returns the original bytes verbatim; `writeZip(readZip(f))` is byte-identical for archives without directory markers |
 | Preservation | after a single-cell edit, every untouched ZIP entry is byte-identical (local header + compressed bytes + CRC) |
 | Values vs SheetJS | match on a real file (numbers, strings, booleans, formulas) |
+| Streaming vs eager | identical cells/types incl. dates and a formula, on generated + ExcelJS files |
 
-Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated ZIP entries (raw verbatim reuse), value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits, zip64/data-descriptor/encryption rejection, CRC validation), styles, merges, Blob adapters and the audit regression cases.
+Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated ZIP entries (raw verbatim reuse), value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits, zip64/data-descriptor/encryption rejection, CRC validation), styles, merges, Blob adapters, the audit regression cases, and streaming (value/type parity with the eager reader, the same hardening rejections, incremental decompression and a bounded-memory gate).
 
 ### Write benchmark — raw deflate reuse (5000 × 8 worksheet, same file as below)
 
@@ -123,7 +148,7 @@ Same inputs, interleaved A/B: the v0.3 writer (`fflate.zipSync` over ALL entries
 
 | Library | Read (median) | Published size (gzip, incl. deps) | Transitive deps |
 |---|---|---|---|
-| **sheet-lite** | **~150 ms** | **~28.0 kB** (16.2 kB + fflate 11.8 kB) | **0** |
+| **sheet-lite** | **~150 ms** | **~31 kB** (19.5 kB main entry + fflate 11.8 kB; streaming adds ~6 kB on demand) | **0** |
 | ExcelJS | ~175–230 ms | 249.9 kB | 9 |
 | SheetJS (`xlsx`) | ~210–260 ms | 136.4 kB | 7 |
 
@@ -141,9 +166,9 @@ Same inputs, interleaved A/B: the v0.3 writer (`fflate.zipSync` over ALL entries
 | **v0.2** ✅ | Values API + editing (preserving) + real-file compatibility + benchmark | 25/25 tests; values match SheetJS; benchmark published |
 | **v0.3** ✅ | Styles API (`numFmt`/font/fill) + merges | 29/29 tests; output parses with SheetJS |
 | **runtime** ✅ | Browser / edge (Deno, Workers) adapters; reuse original deflate streams | Raw ZIP layer with verbatim reuse (byte-identical untouched entries; zip64/descriptor rejection); `readBlob`/`toBlob`/`download` + ESM dist verified free of static `node:` imports; 56/56 tests. Workers/Deno example itself not exercised (Blob API smoke-tested on Node) |
-| **stream** | Streaming reads for large files | 100k rows under a fixed memory ceiling |
+| **stream** ✅ | Streaming reads for large files | Bounded-memory read-only API (`sheet-lite/stream`): 100k × 8 rows at **10.2 MB** live heap vs **673 MB** eager, values identical to the eager reader; same hardening rejections through the streaming path; main bundle kept under budget via a lazy chunk. 81/81 tests |
 
-> Milestones are named, not versioned. Published npm versions continue sequentially (`0.3.0` = styles, `0.4.0` ≈ runtime, `0.5.0` ≈ stream).
+> Milestones are named, not versioned. Published npm versions continue sequentially (`0.3.0` = styles, `0.4.0` ≈ runtime, `0.5.0` ≈ stream). The streaming API is additive and ships from a separate `sheet-lite/stream` subpath so the eager entry stays small.
 
 **Explicitly out of scope (for now):** `.xls`/`.xlsb`, encryption, formula evaluation, creating charts/pivots/images/macros (preserved, not created).
 
@@ -163,16 +188,21 @@ pnpm build       # tsdown -> dist/
 ```
 src/
   index.ts                # public API
-  api/workbook.ts         # Workbook: read / readBlob / toBuffer / toBlob / download / worksheets
+  stream.ts               # `sheet-lite/stream` entry point (StreamingWorkbook)
+  api/workbook.ts         # Workbook: read / readBlob / toBuffer / toBlob / download / openStream(→ stream)
+  api/streaming.ts        # StreamingWorkbook / StreamingSheet (read-only, row-by-row)
   api/worksheet.ts        # Worksheet: getCell / eachRow / addRow
   api/cell.ts             # Cell
-  xml/xml.ts              # tiny XML reader + entity helpers
+  xml/xml.ts              # tiny DOM XML reader + entity helpers
+  xml/pull-parser.ts      # incremental XML pull-parser (streaming sheets + shared strings)
   reader/package-reader.ts# workbook, rels, shared strings, styles
   reader/sheet-parser.ts  # cells, rows, references, value decoding
+  reader/stream-sheet.ts  # streaming worksheet: one row at a time
   writer/sheet-writer.ts  # surgical cell patching
   model/value.ts          # CellValue / ValueType
   model/dates.ts          # Excel serial <-> Date (1900/1904)
   zip/raw.ts              # raw ZIP container: parse/serialize, verbatim entry reuse, CRC-32, hardening
+  zip/stream.ts           # streaming ZIP: byte sources, directory parse, incremental inflate
   zip/archive.ts          # ZIP facade: readZip/writeZip on the raw layer + safety limits
   zip/errors.ts           # SheetLiteError / ZipSecurityError / ZipUnsupportedError
   opc/part-store.ts       # in-memory parts + dirty tracking
@@ -186,8 +216,10 @@ test/
   compat.test.ts          # real ExcelJS file vs SheetJS
   zip-hardening.test.ts   # security limits
   raw-zip.test.ts         # raw-layer: verbatim reuse, byte-identity, zip64/descriptor/CRC rejection
+  stream.test.ts          # streaming parity + hardening + bounded-memory gate
   browser-adapters.test.ts# readBlob / toBlob / download
-  dist.test.ts            # built ESM has no static node: imports
+  dist.test.ts            # built ESM (every chunk) has no static node: imports
   opc.test.ts             # content-types + paths
 scripts/bench.mjs         # size + read + write benchmarks (incl. raw-reuse scenarios)
+scripts/bench-stream.mjs  # eager-vs-streaming memory/time benchmark
 ```
