@@ -22,6 +22,8 @@ export interface RowRecord {
   closeStart: number;
   end: number;
   selfClosing: boolean;
+  /** Row height from the `ht` attribute, when set. */
+  height?: number;
 }
 
 export interface MergeChild {
@@ -30,14 +32,61 @@ export interface MergeChild {
   end: number;
 }
 
+export interface DimensionRecord {
+  start: number;
+  end: number;
+  /** Raw ref attribute, e.g. "A1:D4". */
+  ref: string;
+}
+
+export interface ColRecord {
+  min: number;
+  max: number;
+  /** All attributes of the `<col>` element (width, style, hidden, customWidth, ...). */
+  attrs: Record<string, string>;
+  start: number;
+  end: number;
+}
+
+export interface PaneRecord {
+  start: number;
+  end: number;
+  attrs: Record<string, string>;
+}
+
+export interface SheetViewRecord {
+  start: number;
+  openEnd: number;
+  closeStart: number;
+  end: number;
+  attrs: Record<string, string>;
+  pane: PaneRecord | null;
+}
+
+export interface SheetViewsRecord {
+  start: number;
+  openEnd: number;
+  closeStart: number;
+  end: number;
+  views: SheetViewRecord[];
+}
+
 export interface ParsedSheet {
   xml: string;
   cells: Map<string, CellRecord>;
   rows: Map<number, RowRecord>;
+  /** Index of `<sheetData` (or of `</worksheet>` when sheetData is absent). */
+  sheetDataStart: number;
+  /** True when sheetData is self-closing (`<sheetData/>`): new rows must replace it. */
+  sheetDataSelfClosing: boolean;
   /** Index of the `</sheetData>` close tag in the original XML. */
   sheetDataClose: number;
   /** Index just after `</sheetData>` (where sibling elements such as mergeCells go). */
   sheetDataEnd: number;
+  dimension: DimensionRecord | null;
+  sheetFormatPrStart: number | null;
+  cols: { start: number; openEnd: number; closeStart: number; end: number; entries: ColRecord[] } | null;
+  sheetViews: SheetViewsRecord | null;
   mergeCells: { start: number; openEnd: number; closeStart: number; end: number } | null;
   mergeChildren: MergeChild[];
   maxRow: number;
@@ -124,6 +173,7 @@ export function parseSheet(xml: string, meta: PackageMeta): ParsedSheet {
         closeStart: rowNode.closeStart,
         end: rowNode.end,
         selfClosing: rowNode.closeStart === rowNode.openEnd,
+        height: rowNode.attrs.ht !== undefined ? Number(rowNode.attrs.ht) : undefined,
       });
       if (r > maxRow) maxRow = r;
 
@@ -164,15 +214,88 @@ export function parseSheet(xml: string, meta: PackageMeta): ParsedSheet {
     }
   }
 
-  const closeIdx = xml.lastIndexOf('</sheetData>');
-  const sheetDataClose = closeIdx === -1 ? xml.lastIndexOf('</worksheet>') : closeIdx;
-  const sheetDataEnd = closeIdx === -1 ? sheetDataClose : closeIdx + '</sheetData>'.length;
+  const dimensionNode = child(worksheet, 'dimension');
+  const dimension: DimensionRecord | null = dimensionNode
+    ? { start: dimensionNode.start, end: dimensionNode.end, ref: dimensionNode.attrs.ref ?? '' }
+    : null;
+
+  const sheetFormatPr = child(worksheet, 'sheetFormatPr');
+
+  const colsNode = child(worksheet, 'cols');
+  let cols: ParsedSheet['cols'] = null;
+  if (colsNode) {
+    const entries: ColRecord[] = [];
+    for (const col of childrenOf(colsNode, 'col')) {
+      const min = Number(col.attrs.min);
+      const max = col.attrs.max !== undefined ? Number(col.attrs.max) : min;
+      if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) continue;
+      entries.push({ min, max, attrs: { ...col.attrs }, start: col.start, end: col.end });
+    }
+    cols = {
+      start: colsNode.start,
+      openEnd: colsNode.openEnd,
+      closeStart: colsNode.closeStart,
+      end: colsNode.end,
+      entries,
+    };
+  }
+
+  const sheetViewsNode = child(worksheet, 'sheetViews');
+  let sheetViews: ParsedSheet['sheetViews'] = null;
+  if (sheetViewsNode) {
+    const views: SheetViewRecord[] = [];
+    for (const view of childrenOf(sheetViewsNode, 'sheetView')) {
+      const paneNode = child(view, 'pane');
+      views.push({
+        start: view.start,
+        openEnd: view.openEnd,
+        closeStart: view.closeStart,
+        end: view.end,
+        attrs: { ...view.attrs },
+        pane: paneNode
+          ? { start: paneNode.start, end: paneNode.end, attrs: { ...paneNode.attrs } }
+          : null,
+      });
+    }
+    sheetViews = {
+      start: sheetViewsNode.start,
+      openEnd: sheetViewsNode.openEnd,
+      closeStart: sheetViewsNode.closeStart,
+      end: sheetViewsNode.end,
+      views,
+    };
+  }
+
+  // Positions are taken from the parsed nodes so self-closing `<sheetData/>`
+  // (new sheets, sheets without rows) is handled: rows can never be appended
+  // after a self-closing sheetData, the element must be replaced instead.
+  let sheetDataStart: number;
+  let sheetDataSelfClosing = false;
+  let sheetDataClose: number;
+  let sheetDataEnd: number;
+  if (sheetData) {
+    sheetDataStart = sheetData.start;
+    sheetDataSelfClosing = sheetData.closeStart === sheetData.openEnd;
+    sheetDataClose = sheetDataSelfClosing ? sheetData.end : sheetData.closeStart;
+    sheetDataEnd = sheetData.end;
+  } else {
+    const fallback = xml.lastIndexOf('</worksheet>');
+    sheetDataStart = fallback === -1 ? xml.length : fallback;
+    sheetDataClose = sheetDataStart;
+    sheetDataEnd = sheetDataStart;
+  }
   return {
     xml,
     cells,
     rows,
+    sheetDataStart,
+    sheetDataSelfClosing,
     sheetDataClose,
     sheetDataEnd,
+    dimension,
+    sheetFormatPrStart: sheetFormatPr ? sheetFormatPr.start : null,
+    cols,
+    sheetViews,
     mergeCells: mergeCellsNode
       ? {
           start: mergeCellsNode.start,

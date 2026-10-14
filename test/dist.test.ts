@@ -40,7 +40,8 @@ describe('runtime — ESM dist is browser/edge safe', () => {
       expect(content, `${name} has a static node: require`).not.toMatch(/require\(\s*["']node:/);
     }
     // The filesystem helpers must be reachable only through dynamic import.
+    // (The minifier may normalize the string literal to a template literal.)
     const index = readFileSync(distPath, 'utf8');
-    expect(index).toMatch(/import\(\s*["']node:fs\/promises["']\s*\)/);
+    expect(index).toMatch(/import\(\s*["'`]node:fs\/promises["'`]\s*\)/);
   });
 });

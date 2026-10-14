@@ -2,13 +2,36 @@ import { dateToSerial } from '../model/dates';
 import { escapeXml } from '../xml/xml';
 import type { CellValue } from '../model/value';
 import type { CellStyleOverrides } from '../model/style';
-import { refToCoords, type ParsedSheet } from '../reader/sheet-parser';
+import type { SheetViewProps } from '../model/view';
+import { coordsToRef, refToCoords, type ColRecord, type ParsedSheet } from '../reader/sheet-parser';
 import type { StyleRegistry } from './style-registry';
 
 export interface CellEdit {
   hasValue: boolean;
   value: CellValue;
   style?: CellStyleOverrides;
+}
+
+/** Width/hidden overrides for one column. `null` clears the property. */
+export interface ColEdit {
+  width?: number | null;
+  hidden?: boolean | null;
+}
+
+/**
+ * Everything a write can change in one worksheet part. Every collection may be
+ * empty; the writer only emits edits for entries that are actually present.
+ */
+export interface SheetPatch {
+  changes: Map<string, CellEdit>;
+  newMerges: string[];
+  removedMerges: string[];
+  /** 1-based column -> width/hidden overrides. */
+  colEdits: Map<number, ColEdit>;
+  /** 1-based row -> height (`null` clears a previously set height). */
+  rowHeights: Map<number, number | null>;
+  /** Requested sheet views (frozen panes); `null` leaves the XML untouched. */
+  views: SheetViewProps[] | null;
 }
 
 /** Serialize a single cell into OOXML `<c>` markup. `''` removes the cell. */
@@ -46,26 +69,33 @@ interface Op {
   pos: number;
   end: number;
   text: string;
+  /**
+   * Tiebreak for edits anchored at the same position (applied after sorting by
+   * descending `pos`): lower `order` is applied first and therefore ends up
+   * LATER in the output; the edit that must appear first in the document gets
+   * the highest `order` at that position. Example at `<sheetData>`:
+   * a created `<cols>` (order 1) must precede a created `<sheetViews>` text,
+   * so the views edit gets order 2 and the cols edit order 1.
+   */
+  order?: number;
 }
 
 /**
- * Patch a worksheet: only the changed cells/merges are rewritten; every
- * untouched byte of the original XML stays exactly as it was.
+ * Patch a worksheet: only the changed cells/merges/columns/rows/views are
+ * rewritten; every untouched byte of the original XML stays exactly as it was.
  */
 export function serializeSheet(
   sheet: ParsedSheet,
-  changes: Map<string, CellEdit>,
+  patch: SheetPatch,
   date1904: boolean,
   registry: StyleRegistry | null,
-  newMerges: string[],
-  removedMerges: string[],
 ): string {
   const ops: Op[] = [];
   const insertsByPos = new Map<number, { col: number; xml: string }[]>();
   const newRows = new Map<number, { col: number; xml: string }[]>();
   const selfClosingRows = new Map<number, { col: number; xml: string }[]>();
 
-  for (const [ref, edit] of changes) {
+  for (const [ref, edit] of patch.changes) {
     const existing = sheet.cells.get(ref);
     const baseIndex = existing ? existing.styleIndex : 0;
     const styleIndex =
@@ -108,7 +138,8 @@ export function serializeSheet(
   for (const [rowNum, list] of selfClosingRows) {
     list.sort((a, b) => a.col - b.col);
     const rowRec = sheet.rows.get(rowNum)!;
-    const openTag = sheet.xml.slice(rowRec.start, rowRec.openEnd).replace(/\/>\s*$/, '>');
+    const openTag = (patchedRowOpen(sheet, patch, rowNum) ?? sheet.xml.slice(rowRec.start, rowRec.openEnd))
+      .replace(/\/>\s*$/, '>');
     ops.push({
       pos: rowRec.start,
       end: rowRec.end,
@@ -116,22 +147,263 @@ export function serializeSheet(
     });
   }
 
+  // Row heights on existing rows: patch only the opening tag. Self-closing
+  // rows that received cells are handled by the loop above.
+  for (const rowNum of patch.rowHeights.keys()) {
+    const rowRec = sheet.rows.get(rowNum);
+    if (!rowRec || selfClosingRows.has(rowNum)) continue;
+    const open = patchedRowOpen(sheet, patch, rowNum)!;
+    ops.push({
+      pos: rowRec.start,
+      end: rowRec.selfClosing ? rowRec.end : rowRec.openEnd,
+      text: open,
+    });
+  }
+
+  // New rows: merge pending heights into the opening tag; rows that only carry
+  // a height are emitted as self-closing elements.
+  const newRowNumbers = new Set<number>(newRows.keys());
+  for (const rowNum of patch.rowHeights.keys()) {
+    if (!sheet.rows.has(rowNum)) newRowNumbers.add(rowNum);
+  }
   const newRowXml: string[] = [];
-  for (const rowNum of [...newRows.keys()].sort((a, b) => a - b)) {
-    const list = newRows.get(rowNum)!;
-    list.sort((a, b) => a.col - b.col);
-    newRowXml.push(`<row r="${rowNum}">${list.map((entry) => entry.xml).join('')}</row>`);
+  for (const rowNum of [...newRowNumbers].sort((a, b) => a - b)) {
+    const list = (newRows.get(rowNum) ?? []).sort((a, b) => a.col - b.col);
+    const height = patch.rowHeights.get(rowNum);
+    const attrs = height !== undefined && height !== null ? ` ht="${height}" customHeight="1"` : '';
+    const cells = list.map((entry) => entry.xml).join('');
+    newRowXml.push(cells ? `<row r="${rowNum}"${attrs}>${cells}</row>` : `<row r="${rowNum}"${attrs}/>`);
   }
   if (newRowXml.length > 0) {
-    ops.push({ pos: sheet.sheetDataClose, end: sheet.sheetDataClose, text: newRowXml.join('') });
+    if (sheet.sheetDataSelfClosing) {
+      ops.push({
+        pos: sheet.sheetDataStart,
+        end: sheet.sheetDataEnd,
+        text: `<sheetData>${newRowXml.join('')}</sheetData>`,
+      });
+    } else {
+      ops.push({ pos: sheet.sheetDataClose, end: sheet.sheetDataClose, text: newRowXml.join('') });
+    }
   }
 
-  applyMergeEdits(sheet, newMerges, removedMerges, ops);
+  applyColEdits(sheet, patch.colEdits, ops);
+  applyViews(sheet, patch.views, ops);
+  applyDimension(sheet, patch, ops);
+  applyMergeEdits(sheet, patch.newMerges, patch.removedMerges, ops);
 
-  ops.sort((a, b) => b.pos - a.pos);
+  ops.sort((a, b) => b.pos - a.pos || (a.order ?? 0) - (b.order ?? 0));
   let out = sheet.xml;
   for (const op of ops) out = out.slice(0, op.pos) + op.text + out.slice(op.end);
   return out;
+}
+
+/** Opening tag of a row with the pending height applied, or null when untouched. */
+function patchedRowOpen(sheet: ParsedSheet, patch: SheetPatch, rowNum: number): string | null {
+  const rowRec = sheet.rows.get(rowNum);
+  if (!rowRec || !patch.rowHeights.has(rowNum)) return null;
+  return patchRowOpenTag(sheet.xml.slice(rowRec.start, rowRec.openEnd), patch.rowHeights.get(rowNum)!);
+}
+
+function patchRowOpenTag(open: string, height: number | null): string {
+  const selfClosing = open.endsWith('/>');
+  const body = selfClosing ? open.slice(0, -2) : open.slice(0, -1);
+  const close = selfClosing ? '/>' : '>';
+  if (height === null || height === undefined) {
+    return body.replace(/\s+ht="[^"]*"/g, '').replace(/\s+customHeight="[^"]*"/g, '') + close;
+  }
+  let out = body
+    .replace(/\s+ht="[^"]*"/g, ` ht="${height}"`)
+    .replace(/\s+customHeight="[^"]*"/g, ' customHeight="1"');
+  if (!/ ht="/.test(out)) out += ` ht="${height}"`;
+  if (!/ customHeight="/.test(out)) out += ' customHeight="1"';
+  return out + close;
+}
+
+function applyColEdits(sheet: ParsedSheet, colEdits: Map<number, ColEdit>, ops: Op[]): void {
+  if (colEdits.size === 0) return;
+  const cols = sheet.cols;
+  if (!cols) {
+    const entries = [...colEdits.keys()]
+      .sort((a, b) => a - b)
+      .map((col) => colEntryXml(col, col, colEditAttrs({}, colEdits.get(col)!)));
+    // cols precedes sheetData in the worksheet schema.
+    ops.push({ pos: sheet.sheetDataStart, end: sheet.sheetDataStart, text: `<cols>${entries.join('')}</cols>`, order: 1 });
+    return;
+  }
+
+  // Split and regenerate only the entries that cover an edited column.
+  const editedEntries = new Map<ColRecord, number[]>();
+  const insertions = new Map<number, { col: number; xml: string }[]>();
+  for (const [col, edit] of colEdits) {
+    const entry = cols.entries.find((e) => col >= e.min && col <= e.max);
+    if (entry) {
+      const list = editedEntries.get(entry) ?? [];
+      list.push(col);
+      editedEntries.set(entry, list);
+    } else {
+      const next = cols.entries.find((e) => e.min > col);
+      const pos = next ? next.start : cols.closeStart;
+      const list = insertions.get(pos) ?? [];
+      list.push({ col, xml: colEntryXml(col, col, colEditAttrs({}, edit)) });
+      insertions.set(pos, list);
+    }
+  }
+
+  for (const [entry, editedCols] of editedEntries) {
+    ops.push({ pos: entry.start, end: entry.end, text: splitColEntry(entry, editedCols, colEdits) });
+  }
+  for (const [pos, list] of insertions) {
+    list.sort((a, b) => a.col - b.col);
+    ops.push({ pos, end: pos, text: list.map((entry) => entry.xml).join(''), order: 1 });
+  }
+}
+
+/** Apply width/hidden overrides onto (a copy of) an existing attribute set. */
+function colEditAttrs(base: Record<string, string>, edit: ColEdit): Record<string, string> {
+  const attrs = { ...base };
+  if (edit.width !== undefined) {
+    if (edit.width === null) {
+      delete attrs.width;
+      delete attrs.customWidth;
+    } else {
+      attrs.width = String(edit.width);
+      attrs.customWidth = '1';
+    }
+  }
+  if (edit.hidden !== undefined) {
+    if (edit.hidden === null || edit.hidden === false) delete attrs.hidden;
+    else attrs.hidden = '1';
+  }
+  return attrs;
+}
+
+function colEntryXml(min: number, max: number, attrs: Record<string, string>): string {
+  const parts = [`min="${min}"`, `max="${max}"`];
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === 'min' || key === 'max' || value === undefined) continue;
+    parts.push(`${key}="${escapeXml(value)}"`);
+  }
+  return `<col ${parts.join(' ')}/>`;
+}
+
+/**
+ * Rewrite one `<col>` range so the edited columns carry their overrides while
+ * every other column in the range keeps its original attributes untouched.
+ */
+function splitColEntry(entry: ColRecord, editedCols: number[], colEdits: Map<number, ColEdit>): string {
+  let segments: { from: number; to: number }[] = [{ from: entry.min, to: entry.max }];
+  for (const col of editedCols) {
+    const next: { from: number; to: number }[] = [];
+    for (const seg of segments) {
+      if (col < seg.from || col > seg.to) {
+        next.push(seg);
+        continue;
+      }
+      if (col > seg.from) next.push({ from: seg.from, to: col - 1 });
+      next.push({ from: col, to: col });
+      if (col < seg.to) next.push({ from: col + 1, to: seg.to });
+    }
+    segments = next;
+  }
+
+  let xml = '';
+  for (const seg of segments) {
+    const edited = seg.from === seg.to && colEdits.has(seg.from);
+    const attrs = colEditAttrs(entry.attrs, edited ? colEdits.get(seg.from)! : {});
+    xml += colEntryXml(seg.from, seg.to, attrs);
+  }
+  return xml;
+}
+
+/** The `<pane>` element for the requested first view, or null when unfrozen. */
+function paneXmlFor(view: SheetViewProps | undefined): string | null {
+  if (!view) return null;
+  const state = view.state ?? 'normal';
+  if (state === 'normal') return null;
+  const x = Math.max(0, Math.floor(view.xSplit ?? 0));
+  const y = Math.max(0, Math.floor(view.ySplit ?? 0));
+  if (x === 0 && y === 0) return null;
+  const attrs = [
+    x > 0 ? `xSplit="${x}"` : '',
+    y > 0 ? `ySplit="${y}"` : '',
+    `topLeftCell="${escapeXml(view.topLeftCell ?? coordsToRef(y + 1, x + 1))}"`,
+    `activePane="${x > 0 && y > 0 ? 'bottomRight' : x > 0 ? 'topRight' : 'bottomLeft'}"`,
+  ].filter(Boolean);
+  if (state !== 'split') attrs.push(`state="${state}"`);
+  return `<pane ${attrs.join(' ')}/>`;
+}
+
+function applyViews(sheet: ParsedSheet, views: SheetViewProps[] | null, ops: Op[]): void {
+  if (!views) return;
+  const paneXml = paneXmlFor(views[0]);
+  const record = sheet.sheetViews;
+  if (record) {
+    const view = record.views[0];
+    if (!view) {
+      // Container without a sheetView child: put one (with the pane) inside.
+      if (!paneXml) return;
+      const inner = `<sheetView workbookViewId="0">${paneXml}</sheetView>`;
+      if (record.closeStart === record.openEnd) {
+        ops.push({ pos: record.start, end: record.end, text: `<sheetViews>${inner}</sheetViews>` });
+      } else {
+        ops.push({ pos: record.closeStart, end: record.closeStart, text: inner });
+      }
+      return;
+    }
+    if (view.pane) {
+      // Replace or drop the existing pane; everything else stays byte-identical.
+      ops.push({ pos: view.pane.start, end: view.pane.end, text: paneXml ?? '' });
+    } else if (paneXml) {
+      // pane is the first child of sheetView (before selection etc.).
+      if (view.closeStart === view.openEnd) {
+        // Self-closing sheetView: reopen it with the pane inside.
+        const attrs = Object.entries(view.attrs)
+          .map(([key, value]) => `${key}="${escapeXml(value)}"`)
+          .join(' ');
+        ops.push({ pos: view.start, end: view.end, text: `<sheetView ${attrs}>${paneXml}</sheetView>` });
+      } else {
+        ops.push({ pos: view.openEnd, end: view.openEnd, text: paneXml, order: 1 });
+      }
+    }
+  } else if (paneXml) {
+    // sheetViews precedes sheetFormatPr/cols/sheetData in the worksheet schema.
+    const pos = sheet.sheetFormatPrStart ?? sheet.cols?.start ?? sheet.sheetDataStart;
+    ops.push({
+      pos,
+      end: pos,
+      text: `<sheetViews><sheetView workbookViewId="0">${paneXml}</sheetView></sheetViews>`,
+      order: 2,
+    });
+  }
+}
+
+/**
+ * Keep `<dimension>` in sync when new cells extend the used range: SheetJS and
+ * other consumers bound their reads by the declared ref, so a stale dimension
+ * would make the added cells invisible to them.
+ */
+function applyDimension(sheet: ParsedSheet, patch: SheetPatch, ops: Op[]): void {
+  const dim = sheet.dimension;
+  if (!dim) return;
+  const match = /^([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/.exec(dim.ref);
+  if (!match) return;
+  let maxRow = sheet.maxRow;
+  let maxCol = sheet.maxCol;
+  for (const ref of patch.changes.keys()) {
+    const { row, col } = refToCoords(ref);
+    if (row > maxRow) maxRow = row;
+    if (col > maxCol) maxCol = col;
+  }
+  const endRow = Math.max(Number(match[2]), maxRow);
+  const endCol = Math.max(refToCoords(`${match[3] ?? match[1]}${match[4] ?? match[2]}`).col, maxCol);
+  const startRef = `${match[1]}${match[2]}`;
+  if (endRow > Number(match[4] ?? match[2]) || endCol > refToCoords(`${match[3] ?? match[1]}${match[4] ?? match[2]}`).col) {
+    ops.push({
+      pos: dim.start,
+      end: dim.end,
+      text: `<dimension ref="${startRef}:${coordsToRef(endRow, endCol)}"/>`,
+    });
+  }
 }
 
 function applyMergeEdits(sheet: ParsedSheet, newMerges: string[], removedMerges: string[], ops: Op[]): void {

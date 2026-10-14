@@ -55,7 +55,7 @@ And people are asking for this in the open:
 ```
 API (Workbook)                         <- public surface
   |
-Model (only what is touched)           <- future: Worksheet / Cell
+Model (only what is touched)           <- Worksheet / Cell / Column / Row
   |
 Part engine (patch-only)               <- PartStore + dirty tracking
   |
@@ -100,6 +100,29 @@ Runtime: Node (fs) + Browser (Blob)    <- TS, ESM + CJS
 - [x] **Kept out of the main bundle**: streaming ships as `dist/stream.mjs` + a lazy chunk; `scripts/size.mjs` now gates the static import graph of `index.mjs` and reports lazy chunks separately.
 - [x] Tests (`test/stream.test.ts`): exact value/type parity with the eager reader (generated + ExcelJS files, all value kinds incl. dates, a formula, rich-text shared strings), every structural hardening rejection through the streaming path plus data-descriptor parity, CRC-32 rejection, bounded parser buffer, incremental decompression, and a memory gate with forced GC.
 
+### Sheets milestone — structure editing (v0.5 work)
+
+- [x] **`Workbook.addWorksheet(name, options?)`** — creates the sheet part (`xl/worksheets/sheetN.xml` with `dimension` + empty `<sheetData/>`), registers it in `[Content_Types].xml` (Override), `xl/_rels/workbook.xml.rels` (fresh unique `rIdN`) and `xl/workbook.xml` (`<sheets>` with a unique `sheetId`); creates `styles.xml` (minimal valid styleSheet + Override + rel) when missing; strings in new sheets are written inline (`inlineStr`), so a missing `sharedStrings.xml` never matters. Accepts `options.views` (frozen panes at creation). Throws `SHEET_EXISTS` on duplicate names and `BAD_SHEET_NAME` for empty names, names over 31 characters or containing `: \ / ? * [ ]` (Excel would otherwise repair the file). Returns the new `Worksheet`; `wb.worksheets` / `sheetNames` / `getWorksheet(name | sheetId)` all include it.
+- [x] **`Workbook.removeWorksheet(nameOrId)`** — removes the sheet part, its `xl/worksheets/_rels/sheetN.xml.rels` (if any), the `<sheet>` entry, the workbook rel and the Content-Types Override. Defensive repairs included: a stale `xl/calcChain.xml` (it indexes sheets by position) is dropped with its rel and Override — Excel rebuilds it on load; defined names bound to the removed sheet or referencing it are removed, `localSheetId` indexes of later sheets shift up, and `bookViews/@activeTab` is clamped. **Removing the LAST remaining sheet is rejected with the coded error `LAST_SHEET`** (a workbook must keep at least one sheet for Excel to open it — documented decision); unknown names throw `SHEET_NOT_FOUND`.
+- [x] **Column widths / hidden columns** — `worksheet.getColumn(n | 'A')` returns a `Column` with `width` / `hidden` (get/set) and `letter`. Persisted surgically through `<cols>`: created right before `<sheetData>` when missing; existing `<col>` ranges are **split, never destroyed** (other columns keep their attributes), new entries are inserted in sorted position. Width implies `customWidth="1"`; `width = undefined` clears it. Invalid columns throw `BAD_COLUMN`.
+- [x] **Row heights** — `row.height` (get/set) via `<row ht=".." customHeight="1">`; only the row's opening tag is patched (cells and all other attributes stay). Height-only rows are created as self-closing `<row ... ht ..>` elements; new rows combine pending heights with their cells. `height = undefined` clears. Negative/NaN heights throw `BAD_ROW_HEIGHT`.
+- [x] **Frozen panes** — ExcelJS-style `worksheet.views` (get/set) with `{ state: 'frozen' | 'frozenSplit' | 'split' | 'normal', xSplit, ySplit, topLeftCell, workbookViewId }`. Persisted via surgical `<sheetViews>/<sheetView>/<pane>` patching: `<sheetViews>` is created at its schema position when missing; an existing `<pane>` is replaced in place (everything else in the sheetView — selection, workbookViewId, tabSelected — stays byte-identical); `views = []` / `{ state: 'normal' }` unfreeze. `topLeftCell` is computed from the splits when omitted (`C4` for xSplit 2 / ySplit 3). Reading back returns the views. Only the FIRST view of a sheet is editable; other views are preserved.
+- [x] **Kept honest with the patch-only promise**: `<dimension ref>` is extended (never shrunk) when new cells exceed it — SheetJS bounds `!ref` by the declared dimension, so without this the added cells would be invisible to SheetJS. Fixed along the way: new rows are now correctly placed when `<sheetData/>` is self-closing (new sheets have exactly that shape).
+- [x] Tests (`test/sheets.test.ts`, 24 tests): addWorksheet on an ExcelJS-built workbook (values incl. styled dates + formulas round-trip; SheetJS reads them; content-types/rels/sheetId/name coherence), missing styles.xml + sharedStrings.xml, coded name rejections, frozen panes at creation, removeWorksheet round-trips incl. byte-identical untouched parts and a calcChain/definedNames/activeTab fixture, add+remove leaving every part content-identical, column width/hidden round-trips incl. range splitting and defaults, row heights (existing / height-only / combined / cleared), frozen panes (create / replace / unfreeze / read back), and preservation invariants across sheet-structure edits.
+
+**Verification (executed, Node 24 / Windows):**
+
+| Check | Result |
+|---|---|
+| `pnpm test` | **112/112 passing** (88 pre-existing + 24 new sheet tests) |
+| `pnpm typecheck` (TS 7) | clean |
+| `pnpm size` | ok — main entry **16.3 kB gzip** (budget 20 kB; the dist is now minified, which also pays for the new feature code) |
+| Real-corpus structure round-trip (ad-hoc script over all 11 `test/fixtures/real/` files) | **11/11**: addWorksheet (+ value/width/height/frozen panes) → coherence → re-read → removeWorksheet (added sheet + first sheet) → coherence → SheetJS sheet names match → every untouched part byte-identical |
+| ExcelJS cross-read | ExcelJS 4.4.0 opens the edited output and reads back the new sheet's value, column width, row height and frozen views (5 corpus files cannot be loaded by ExcelJS at all — pre-existing ExcelJS `filterButton` bug, independent of sheet-lite) |
+| Patch-only proof | addWorksheet + removeWorksheet of an untouched sheet leaves **every part content-identical** to the original |
+
+> **Sheets honesty notes:** (1) `addWorksheet` creates *plain* worksheets (values via inline strings, optional frozen panes); it does not create charts, tables, images or data validations. (2) Only the first `sheetView` of a sheet is editable; additional views and view attributes are preserved as-is. (3) `removeWorksheet` removes the parts the milestone owns (sheet part + rels + registration) and repairs what would go stale (calcChain, defined names, activeTab) — but *orphan* parts owned by the removed sheet (e.g. a drawing or table part that only it referenced) stay in the package unreferenced, which Excel ignores. (4) Shared strings of removed sheets remain in `sharedStrings.xml` (harmless; Excel prunes on next save). (5) The dist is now **minified** (`tsdown.config.ts`): the un-minified main graph had only ~0.8 kB gzip headroom left, which no feature of this size could fit under.
+
 ### Stream benchmark — eager vs streaming (100 000 × 8 worksheet, ExcelJS)
 
 Measured with `pnpm bench:stream`; each phase runs in its own fresh node process (`node --expose-gc`), Node 24 / Windows. File: 4.5 MB compressed; worksheet part **30.5 MB** inflated; sharedStrings 4.8 MB inflated.
@@ -117,7 +140,7 @@ The streaming reader holds only a 64 KiB compressed chunk, fflate's 32 KiB windo
 
 | Check | Result |
 |---|---|
-| `pnpm test` | **81/81 passing** (15 files; includes the 56 pre-existing tests and the sibling data-descriptor/corpus suites) |
+| `pnpm test` | **112/112 passing** (16 files; includes the pre-existing suites, the data-descriptor/corpus suites and the `sheets` milestone suite) |
 | `pnpm typecheck` (TS 7) | clean |
 | `pnpm build` (`tsdown`, code-split) | ESM main graph **19.5 kB gzip** (`index.mjs` 8.7 + shared chunk 10.8; budget 20 kB); streaming chunk 5.9 kB gzip + `stream.mjs` 0.2 kB, loaded on demand (not gated) |
 | `pnpm size` | ok (main entry under the 20 kB gzip budget) |
@@ -128,7 +151,7 @@ The streaming reader holds only a 64 KiB compressed chunk, fflate's 32 KiB windo
 | Values vs SheetJS | match on a real file (numbers, strings, booleans, formulas) |
 | Streaming vs eager | identical cells/types incl. dates and a formula, on generated + ExcelJS files |
 
-Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated ZIP entries (raw verbatim reuse), value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits, zip64/data-descriptor/encryption rejection, CRC validation), styles, merges, Blob adapters, the audit regression cases, and streaming (value/type parity with the eager reader, the same hardening rejections, incremental decompression and a bounded-memory gate).
+Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated ZIP entries (raw verbatim reuse), value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits, zip64/data-descriptor/encryption rejection, CRC validation), styles, merges, Blob adapters, the audit regression cases, streaming (value/type parity with the eager reader, the same hardening rejections, incremental decompression and a bounded-memory gate), and sheet structure (add/remove worksheets with OPC coherence, column widths/hidden, row heights, frozen panes, preservation invariants and SheetJS/ExcelJS cross-reads).
 
 ### Write benchmark — raw deflate reuse (5000 × 8 worksheet, same file as below)
 
@@ -167,11 +190,12 @@ Same inputs, interleaved A/B: the v0.3 writer (`fflate.zipSync` over ALL entries
 | **v0.3** ✅ | Styles API (`numFmt`/font/fill) + merges | 29/29 tests; output parses with SheetJS |
 | **runtime** ✅ | Browser / edge (Deno, Workers) adapters; reuse original deflate streams | Raw ZIP layer with verbatim reuse (byte-identical untouched entries; zip64/descriptor rejection); `readBlob`/`toBlob`/`download` + ESM dist verified free of static `node:` imports; 56/56 tests. Workers/Deno example itself not exercised (Blob API smoke-tested on Node) |
 | **stream** ✅ | Streaming reads for large files | Bounded-memory read-only API (`sheet-lite/stream`): 100k × 8 rows at **10.2 MB** live heap vs **673 MB** eager, values identical to the eager reader; same hardening rejections through the streaming path; main bundle kept under budget via a lazy chunk. 81/81 tests |
+| **sheets** ✅ | Add/remove worksheets + sheet-structure editing (ExcelJS-compatible API) | `addWorksheet` / `removeWorksheet` with full OPC registration/coherence, `Column` width/hidden, `Row.height`, `worksheet.views` (frozen panes) — all surgical; untouched parts byte-identical, verified on all 11 real-corpus files; SheetJS parses the results and ExcelJS reads the new structures back. 112/112 tests |
 | **real-world** 🟡 | Real-file corpus + LibreOffice gate in CI | Infra ready (`test/fixtures/real/`, `test/corpus.test.ts`, `scripts/validate-corpus.mjs`, `pnpm validate:corpus`); 4 real files pass read/edit/no-op. Pending: LibreOffice CI job + more files |
 
-> Milestones are named, not versioned. Published npm versions continue sequentially: `0.3.0` = styles; **`0.4.0` = runtime + stream + real-world corpus infrastructure + ZIP data-descriptor support**. The streaming API is additive and ships from a separate `sheet-lite/stream` subpath so the eager entry stays small.
+> Milestones are named, not versioned. Published npm versions continue sequentially: `0.3.0` = styles; **`0.4.0` = runtime + stream + real-world corpus infrastructure + ZIP data-descriptor support**; **`0.5.0` = sheets structure (add/remove worksheets, columns, rows, views)**. The streaming API is additive and ships from a separate `sheet-lite/stream` subpath so the eager entry stays small.
 
-**Explicitly out of scope (for now):** `.xls`/`.xlsb`, encryption, formula evaluation, creating charts/pivots/images/macros (preserved, not created).
+**Explicitly out of scope (for now):** `.xls`/`.xlsb`, encryption, formula evaluation, creating charts/pivots/images/macros (preserved, not created). Sheet-structure editing creates **plain worksheets only** — no charts, tables, drawings or conditional formatting on the new sheet (add them by editing later; existing parts are preserved).
 
 ---
 
@@ -190,16 +214,21 @@ pnpm build       # tsdown -> dist/
 src/
   index.ts                # public API
   stream.ts               # `sheet-lite/stream` entry point (StreamingWorkbook)
-  api/workbook.ts         # Workbook: read / readBlob / toBuffer / toBlob / download / openStream(→ stream)
+  api/workbook.ts         # Workbook: read / readBlob / toBuffer / toBlob / download / openStream(→ stream) / addWorksheet / removeWorksheet
   api/streaming.ts        # StreamingWorkbook / StreamingSheet (read-only, row-by-row)
-  api/worksheet.ts        # Worksheet: getCell / eachRow / addRow
+  api/worksheet.ts        # Worksheet: getCell / eachRow / addRow / getColumn / views
   api/cell.ts             # Cell
+  api/column.ts           # Column (width / hidden / letter)
+  model/style.ts          # CellStyle / font / fill shapes
+  model/view.ts           # SheetViewProps (frozen panes)
   xml/xml.ts              # tiny DOM XML reader + entity helpers
   xml/pull-parser.ts      # incremental XML pull-parser (streaming sheets + shared strings)
   reader/package-reader.ts# workbook, rels, shared strings, styles
-  reader/sheet-parser.ts  # cells, rows, references, value decoding
+  reader/sheet-parser.ts  # cells, rows, references, value decoding, cols/sheetViews spans
   reader/stream-sheet.ts  # streaming worksheet: one row at a time
-  writer/sheet-writer.ts  # surgical cell patching
+  writer/sheet-writer.ts  # surgical patching: cells, merges, cols, row heights, panes, dimension
+  writer/style-registry.ts# styles.xml dedup registry (numFmt/font/fill)
+  opc/package-edit.ts     # surgical edits on content-types / rels / workbook.xml
   model/value.ts          # CellValue / ValueType
   model/dates.ts          # Excel serial <-> Date (1900/1904)
   zip/raw.ts              # raw ZIP container: parse/serialize, verbatim entry reuse, CRC-32, hardening
@@ -215,6 +244,7 @@ test/
   edit.test.ts            # editing preserves everything else
   values.test.ts          # value reading + types
   compat.test.ts          # real ExcelJS file vs SheetJS
+  sheets.test.ts          # add/remove worksheets, columns, rows, frozen panes
   zip-hardening.test.ts   # security limits
   raw-zip.test.ts         # raw-layer: verbatim reuse, byte-identity, zip64/descriptor/CRC rejection
   stream.test.ts          # streaming parity + hardening + bounded-memory gate

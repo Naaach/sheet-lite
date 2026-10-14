@@ -8,4 +8,7 @@ export default defineConfig({
   target: 'es2022',
   sourcemap: true,
   treeshake: true,
+  // The 20 kB gzip budget for the main entry cannot absorb new features
+  // (sheet structure editing) without minification.
+  minify: true,
 });

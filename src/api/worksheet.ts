@@ -1,10 +1,19 @@
 import type { PackageMeta } from '../reader/package-reader';
-import { coordsToRef, parseSheet, refToCoords, type ParsedSheet } from '../reader/sheet-parser';
-import { serializeSheet, type CellEdit } from '../writer/sheet-writer';
+import {
+  columnToNumber,
+  coordsToRef,
+  parseSheet,
+  refToCoords,
+  type ParsedSheet,
+} from '../reader/sheet-parser';
+import { serializeSheet, type CellEdit, type ColEdit, type SheetPatch } from '../writer/sheet-writer';
 import type { StyleRegistry } from '../writer/style-registry';
 import type { CellStyleOverrides, FillProps, FontProps } from '../model/style';
+import type { SheetViewProps } from '../model/view';
 import { type CellValue } from '../model/value';
+import { SheetLiteError } from '../zip/errors';
 import { Cell } from './cell';
+import { Column } from './column';
 
 export class Row {
   constructor(
@@ -19,6 +28,14 @@ export class Row {
 
   eachCell(callback: (cell: Cell, col: number) => void): void {
     for (const cell of this.cells) callback(cell, cell.col);
+  }
+
+  get height(): number | undefined {
+    return this.worksheet.getRowHeight(this.number);
+  }
+
+  set height(value: number | undefined) {
+    this.worksheet.setRowHeight(this.number, value);
   }
 }
 
@@ -38,6 +55,9 @@ export class Worksheet {
   private readonly changes = new Map<string, CellEdit>();
   private readonly newMerges = new Set<string>();
   private readonly removedMerges = new Set<string>();
+  private readonly colEdits = new Map<number, ColEdit>();
+  private readonly rowHeights = new Map<number, number | null>();
+  private pendingViews: SheetViewProps[] | null = null;
 
   constructor(
     name: string,
@@ -142,7 +162,69 @@ export class Worksheet {
     this.removedMerges.add(key);
   }
 
+  /** A single column (1-based number or letter), ExcelJS-style. */
+  getColumn(col: number | string): Column {
+    const n = typeof col === 'number' ? Math.floor(col) : columnToNumber(col);
+    if (!Number.isFinite(n) || n < 1 || n > 16384) {
+      throw new SheetLiteError(`Invalid column ${String(col)}: must be a number 1-16384 or a letter (A-XFD)`, 'BAD_COLUMN');
+    }
+    return new Column(this, n);
+  }
+
+  get views(): SheetViewProps[] {
+    if (this.pendingViews) return this.pendingViews.map((view) => ({ ...view }));
+    return readSheetViews(this.parsed);
+  }
+
+  /** ExcelJS-style frozen panes: `ws.views = [{ state: 'frozen', xSplit: 2, ySplit: 3 }]`. */
+  set views(views: SheetViewProps[] | undefined) {
+    this.pendingViews = (views ?? []).map((view) => ({ ...view }));
+  }
+
   // --- internal ---
+
+  getColumnWidth(col: number): number | undefined {
+    for (const entry of this.parsed.cols?.entries ?? []) {
+      if (col >= entry.min && col <= entry.max) {
+        const width = entry.attrs.width;
+        return width !== undefined ? Number(width) : undefined;
+      }
+    }
+    return undefined;
+  }
+
+  setColumnWidth(col: number, width: number | undefined): void {
+    this.mergeColEdit(col, { width: width === undefined ? null : width });
+  }
+
+  getColumnHidden(col: number): boolean {
+    for (const entry of this.parsed.cols?.entries ?? []) {
+      if (col >= entry.min && col <= entry.max) {
+        return entry.attrs.hidden === '1' || entry.attrs.hidden === 'true';
+      }
+    }
+    return false;
+  }
+
+  setColumnHidden(col: number, hidden: boolean): void {
+    this.mergeColEdit(col, { hidden: hidden ? true : null });
+  }
+
+  private mergeColEdit(col: number, edit: ColEdit): void {
+    const existing = this.colEdits.get(col) ?? {};
+    this.colEdits.set(col, { ...existing, ...edit });
+  }
+
+  getRowHeight(row: number): number | undefined {
+    return this.parsed.rows.get(row)?.height;
+  }
+
+  setRowHeight(row: number, height: number | undefined): void {
+    if (height !== undefined && (!Number.isFinite(height) || height < 0)) {
+      throw new SheetLiteError(`Invalid row height ${height}: must be a non-negative number`, 'BAD_ROW_HEIGHT');
+    }
+    this.rowHeights.set(row, height === undefined ? null : height);
+  }
 
   getCellValue(ref: string): CellValue {
     const edit = this.changes.get(ref);
@@ -186,21 +268,48 @@ export class Worksheet {
   }
 
   isDirty(): boolean {
-    return this.changes.size > 0 || this.newMerges.size > 0 || this.removedMerges.size > 0;
+    return (
+      this.changes.size > 0 ||
+      this.newMerges.size > 0 ||
+      this.removedMerges.size > 0 ||
+      this.colEdits.size > 0 ||
+      this.rowHeights.size > 0 ||
+      this.pendingViews !== null
+    );
   }
 
   serialize(registry: StyleRegistry | null): string {
-    return serializeSheet(
-      this.parsed,
-      this.changes,
-      this.meta.date1904,
-      registry,
-      [...this.newMerges],
-      [...this.removedMerges],
-    );
+    const patch: SheetPatch = {
+      changes: this.changes,
+      newMerges: [...this.newMerges],
+      removedMerges: [...this.removedMerges],
+      colEdits: this.colEdits,
+      rowHeights: this.rowHeights,
+      views: this.pendingViews,
+    };
+    return serializeSheet(this.parsed, patch, this.meta.date1904, registry);
   }
 
   private baseStyleIndex(ref: string): number {
     return this.parsed.cells.get(ref)?.styleIndex ?? 0;
   }
+}
+
+function readSheetViews(sheet: ParsedSheet): SheetViewProps[] {
+  const record = sheet.sheetViews;
+  if (!record) return [];
+  return record.views.map((view) => {
+    const props: SheetViewProps = { workbookViewId: Number(view.attrs.workbookViewId ?? 0) };
+    if (view.pane) {
+      const pane = view.pane.attrs;
+      props.state = (pane.state as SheetViewProps['state'] | undefined) ?? 'split';
+      if (pane.xSplit !== undefined) props.xSplit = Number(pane.xSplit);
+      if (pane.ySplit !== undefined) props.ySplit = Number(pane.ySplit);
+      if (pane.topLeftCell !== undefined) props.topLeftCell = pane.topLeftCell;
+    } else {
+      props.state = 'normal';
+      if (view.attrs.topLeftCell !== undefined) props.topLeftCell = view.attrs.topLeftCell;
+    }
+    return props;
+  });
 }

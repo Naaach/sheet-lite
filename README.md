@@ -8,12 +8,15 @@ When you open an Excel file, change a value and save, most libraries rebuild the
 
 ## Status
 
-**v0.4 — read, edit, style — plus streaming reads for large files.**
+**v0.5 — read, edit, style, sheets — plus streaming reads for large files.**
 
 - [x] `Workbook.read()` / `readFile()` / `toBuffer()` / `writeFile()`
 - [x] Value reading: strings, numbers, booleans, dates (1900/1904), formulas (cached result), inline & shared strings
 - [x] `Worksheet` / `Cell` / `Row` API: `getWorksheet`, `getCell`, `getRow`, `eachRow`, `addRow`
 - [x] **Editing without breaking:** only changed cells/merges are rewritten; other parts stay byte-identical
+- [x] **Sheets:** `wb.addWorksheet(name, options?)` / `wb.removeWorksheet(nameOrId)` — full OPC registration, works on files without `styles.xml`
+- [x] **Columns & rows:** `ws.getColumn(n).width` / `.hidden`, `row.height` — surgical `<cols>` / `<row ht>` patching
+- [x] **Frozen panes:** `ws.views = [{ state: 'frozen', xSplit: 2, ySplit: 3 }]` (ExcelJS-compatible, read back on re-open)
 - [x] **Styles:** `cell.numFmt`, `cell.font` (bold/italic/size/name/color), `cell.fill` (solid/pattern)
 - [x] **Merges:** `worksheet.mergeCells('A1:C1')` / `unmergeCells`
 - [x] Patch-only write: if nothing changed, the original bytes are returned verbatim
@@ -45,6 +48,14 @@ ws.getCell('A1').font = { bold: true };
 ws.getCell('A3').value = new Date();
 ws.mergeCells('C1:D1');
 ws.addRow(['nuevo', 7]);
+
+// structure — add/remove sheets, columns, rows, frozen panes
+const summary = wb.addWorksheet('Summary');
+summary.getCell('A1').value = 'Total';
+summary.getColumn('A').width = 24;
+summary.getRow(1).height = 22;
+summary.views = [{ state: 'frozen', xSplit: 0, ySplit: 1 }];
+wb.removeWorksheet('OldSheet');
 
 await wb.writeFile('./report-edited.xlsx');
 // data validations, conditional formatting, images and other parts stay intact
@@ -90,8 +101,10 @@ Run it yourself: `pnpm bench`
 
 `sheet-lite` is narrower than ExcelJS/SheetJS by design:
 
-- Editing **existing** sheets only — no `addWorksheet` yet.
-- Styles subset: number formats, bold/italic/size/name/color, solid fills. No borders, alignment or row/column dimensions yet.
+- `addWorksheet` creates **plain** worksheets only (values, optional frozen panes) — no charts, tables, images or conditional formatting on new sheets.
+- `removeWorksheet` rejects removing the **last remaining sheet** (a workbook must keep at least one sheet) with the coded error `LAST_SHEET`. Orphan parts that only the removed sheet referenced (e.g. a drawing) stay in the package unreferenced.
+- Only the first `sheetView` of a sheet is editable (`views`); other views/attributes are preserved as-is.
+- Styles subset: number formats, bold/italic/size/name/color, solid fills. No borders or cell alignment yet (column widths, hidden columns and row heights **are** supported).
 - Charts, pivot tables, images, comments and conditional formatting are **preserved, not created**.
 - No `.xls` / `.xlsb`, no encryption, no CSV.
 - No formula evaluation (cached results only — same as ExcelJS and SheetJS).

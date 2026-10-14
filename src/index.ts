@@ -1,6 +1,7 @@
 export { Workbook } from './api/workbook';
 export { Worksheet, Row } from './api/worksheet';
 export { Cell } from './api/cell';
+export { Column } from './api/column';
 export { PartStore } from './opc/part-store';
 export {
   readZip,
@@ -19,6 +20,7 @@ export { parseContentTypes, contentTypeOf, type ContentTypes } from './opc/conte
 export { resolvePartPath } from './opc/relationships';
 export { ValueType, typeOf, type CellValue, type ValueTypeName } from './model/value';
 export type { FontProps, FillProps, CellStyleOverrides } from './model/style';
+export type { SheetViewProps } from './model/view';
 export { serialToDate, dateToSerial, isDateFormatCode } from './model/dates';
 export type { PackageMeta, SheetRef } from './reader/package-reader';
 export { refToCoords, coordsToRef, columnToNumber, numberToColumn } from './reader/sheet-parser';
