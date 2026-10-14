@@ -79,3 +79,29 @@ jobs:
         run: pnpm build
       - name: Pack (dry-run)
         run: npm pack --dry-run
+
+  corpus:
+    name: Real-world corpus + LibreOffice gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Configure pnpm
+        run: pnpm config set verify-store-integrity false
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Install LibreOffice
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc
+      - name: Validate real-world corpus (edited files must re-open without repair)
+        run: node scripts/validate-corpus.mjs
