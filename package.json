@@ -1,6 +1,6 @@
 {
   "name": "sheet-lite",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Lightweight and secure library to read, write and edit Excel (XLSX) without breaking your file. Zero transitive dependencies.",
   "type": "module",
   "license": "MIT",

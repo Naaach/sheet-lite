@@ -176,7 +176,12 @@ describe('stream — value parity with the eager reader', () => {
 
     expectSameValues(await collectStreaming(file, 'S'), collectEager(file, 'S'));
     const streamed = await collectStreaming(file, 'S');
-    expect(streamed.get('A1')!.value).toBe('rich');
+    // Cells whose string contains runs read back as `{ richText }` (ExcelJS shape).
+    expect(streamed.get('A1')!.value).toEqual({
+      richText: [{ text: 'ri' }, { font: { bold: true }, text: 'ch' }],
+    });
+    expect(streamed.get('A1')!.type).toBe('String');
+    // Plain strings stay plain.
     expect(streamed.get('A2')!.value).toBe('plain & <special>');
   });
 

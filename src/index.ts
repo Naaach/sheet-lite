@@ -18,8 +18,16 @@ export { SheetLiteError, ZipSecurityError, ZipUnsupportedError } from './zip/err
 export { crc32 } from './zip/raw';
 export { parseContentTypes, contentTypeOf, type ContentTypes } from './opc/content-types';
 export { resolvePartPath } from './opc/relationships';
-export { ValueType, typeOf, type CellValue, type ValueTypeName } from './model/value';
-export type { FontProps, FillProps, CellStyleOverrides } from './model/style';
+export { ValueType, typeOf, type CellValue, type ValueTypeName, type RichTextRun, type RichTextValue } from './model/value';
+export type {
+  FontProps,
+  FillProps,
+  BorderProps,
+  BorderSideProps,
+  BorderStyleName,
+  AlignmentProps,
+  CellStyleOverrides,
+} from './model/style';
 export type { SheetViewProps } from './model/view';
 export { serialToDate, dateToSerial, isDateFormatCode } from './model/dates';
 export type { PackageMeta, SheetRef } from './reader/package-reader';

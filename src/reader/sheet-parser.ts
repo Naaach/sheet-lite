@@ -1,6 +1,7 @@
 import { parseXml, child, childrenOf, textOf, type XmlNode } from '../xml/xml';
 import { serialToDate } from '../model/dates';
 import { typeOf, type CellValue, type ValueTypeName } from '../model/value';
+import { parseInlineRichText } from './rich-text';
 import type { PackageMeta } from './package-reader';
 
 export interface CellRecord {
@@ -133,7 +134,8 @@ function computeValue(c: XmlNode, meta: PackageMeta): CellValue {
     value = hasText ? meta.sharedStrings[Number(rawText)] ?? '' : '';
   } else if (t === 'inlineStr') {
     const isNode = child(c, 'is');
-    value = isNode ? textOf(isNode) : '';
+    if (!isNode) value = '';
+    else value = parseInlineRichText(isNode) ?? textOf(isNode);
   } else if (t === 'str') {
     value = rawText ?? '';
   } else if (t === 'b') {

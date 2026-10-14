@@ -1,9 +1,11 @@
 import { strFromU8 } from 'fflate';
 import { resolvePartPath } from '../opc/relationships';
 import { SheetLiteError } from '../zip/errors';
-import { parseXml, child, childrenOf, descendants, decodeEntities } from '../xml/xml';
+import { parseXml, child, childrenOf, descendants } from '../xml/xml';
 import { XmlPullParser } from '../xml/pull-parser';
+import { RichTextRunCollector } from './rich-text';
 import { isBuiltinDateFormat, isDateFormatCode } from '../model/dates';
+import type { RichTextValue } from '../model/value';
 
 export interface SheetRef {
   name: string;
@@ -16,7 +18,8 @@ export interface SheetRef {
 export interface PackageMeta {
   date1904: boolean;
   sheets: SheetRef[];
-  sharedStrings: string[];
+  /** Plain string, or `{ richText: [...] }` when the shared string has runs. */
+  sharedStrings: Array<string | RichTextValue>;
   /** numFmtId per index into `cellXfs`. */
   cellXfs: number[];
   numFmts: Map<number, string>;
@@ -51,36 +54,85 @@ function readRels(store: PartLookup, relsPath: string, basePart: string): Map<st
   return map;
 }
 
-/** Decode a shared-strings XML part into the string table (incrementally). */
-function parseSharedStrings(data: Uint8Array, out: string[]): void {
+/** Decode a shared-strings XML part into the string table (incrementally).
+ * Entries with `<r>` runs decode to `{ richText: [...] }` via the shared
+ * collector, so eager and streaming readers see the same shapes. */
+function parseSharedStrings(data: Uint8Array, out: Array<string | RichTextValue>): void {
   const parser = new XmlPullParser();
   const decoder = new TextDecoder();
   let inSi = false;
-  let text = '';
+  let collector = new RichTextRunCollector();
 
   const drain = (): void => {
     for (;;) {
       const event = parser.next();
       if (event === null) return;
       if (event.kind === 'text') {
-        if (inSi) text += event.text;
+        if (inSi) collector.text(event.text);
         continue;
       }
       if (event.kind === 'open') {
         if (event.name === 'si') {
           inSi = true;
-          text = '';
+          collector = new RichTextRunCollector();
           if (event.selfClosing) {
             inSi = false;
             out.push('');
           }
+          continue;
+        }
+        if (!inSi) continue;
+        switch (event.name) {
+          case 'r':
+            collector.openRun();
+            if (event.selfClosing) collector.closeRun();
+            break;
+          case 'rPh':
+            collector.openSkip();
+            if (event.selfClosing) collector.closeSkip();
+            break;
+          case 'rPr':
+            collector.openRPr();
+            if (event.selfClosing) collector.closeRPr();
+            break;
+          case 't':
+            collector.openT();
+            if (event.selfClosing) collector.closeT();
+            break;
+          case 'b':
+          case 'i':
+          case 'u':
+          case 'sz':
+          case 'color':
+          case 'rFont':
+            collector.fontElement(event.name, event.attrs);
+            break;
+          default:
+            break;
         }
         continue;
       }
-      if (event.kind === 'close' && event.name === 'si' && inSi) {
-        inSi = false;
-        out.push(decodeEntities(text));
-        text = '';
+      if (event.kind === 'close' && inSi) {
+        switch (event.name) {
+          case 't':
+            collector.closeT();
+            break;
+          case 'r':
+            collector.closeRun();
+            break;
+          case 'rPh':
+            collector.closeSkip();
+            break;
+          case 'rPr':
+            collector.closeRPr();
+            break;
+          case 'si':
+            inSi = false;
+            out.push(collector.value());
+            break;
+          default:
+            break;
+        }
       }
     }
   };

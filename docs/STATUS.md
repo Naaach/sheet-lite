@@ -110,6 +110,29 @@ Runtime: Node (fs) + Browser (Blob)    <- TS, ESM + CJS
 - [x] **Kept honest with the patch-only promise**: `<dimension ref>` is extended (never shrunk) when new cells exceed it — SheetJS bounds `!ref` by the declared dimension, so without this the added cells would be invisible to SheetJS. Fixed along the way: new rows are now correctly placed when `<sheetData/>` is self-closing (new sheets have exactly that shape).
 - [x] Tests (`test/sheets.test.ts`, 24 tests): addWorksheet on an ExcelJS-built workbook (values incl. styled dates + formulas round-trip; SheetJS reads them; content-types/rels/sheetId/name coherence), missing styles.xml + sharedStrings.xml, coded name rejections, frozen panes at creation, removeWorksheet round-trips incl. byte-identical untouched parts and a calcChain/definedNames/activeTab fixture, add+remove leaving every part content-identical, column width/hidden round-trips incl. range splitting and defaults, row heights (existing / height-only / combined / cleared), frozen panes (create / replace / unfreeze / read back), and preservation invariants across sheet-structure edits.
 
+### Styles milestone 2 — borders, alignment, rich text
+
+- [x] **`cell.border`** (ExcelJS shape: `{ top?, bottom?, left?, right?, diagonal?: { style?, color?: { argb? } }, diagonalUp?, diagonalDown? }` with all 13 OOXML line styles). Persisted through the `<borders>` container: deduped by canonical XML — an identical border the file already carries is **reused** instead of duplicated — the count is patched with `countEdit` (attribute-range edit, never the whole tag), the new `xf` carries `borderId` + `applyBorder="1"`, and all five sides are always emitted in schema order exactly like Excel writes them. Setting one side **merges over** the cell's existing border (sides are never dropped); an empty `{}` is a byte-level no-op. Reading back returns the same shape.
+- [x] **`cell.alignment`** — `horizontal` / `vertical` / `wrapText` / `shrinkToFit` / `indent` / `textRotation` / `readingOrder`. Alignment is **not** a registry container: it lives inside the `xf` as an `<alignment/>` child. The `StyleRegistry` dedups xfs by ids + semantic alignment (an xf that differs only by alignment is created once and reused), and patching only a `numFmt` onto an aligned cell **carries the alignment forward** instead of dropping it. Reading an existing `<alignment>` child populates `cell.alignment`.
+- [x] **Rich text, read AND write** — `cell.value = { richText: [{ text, font? }, …] }` writes `<c t="inlineStr"><is><r><rPr>…</rPr><t xml:space="preserve">…</t></r>…</is></c>` (XML-escaped; `xml:space="preserve"` for leading/trailing whitespace, newlines and tabs; run fonts use `rFont`). Reading a cell whose inline string **or shared string** contains `<r>` runs returns `{ richText: [{ text, font? }] }` instead of the flattened string; plain strings keep returning plain strings. All three readers — the DOM inline-string parser, the incremental shared-strings parser and the streaming worksheet reader — feed one shared run collector (`src/reader/rich-text.ts`), so eager and streaming outputs are structurally identical by construction. Phonetic `<rPh>` runs are excluded from values.
+- [x] **Fixed along the way:** the streaming reader did not entity-decode `t="str"` formula-result strings (nor `t="e"` errors) — found by an eager-vs-streaming parity walk over a real corpus file (`Brighton &amp; Hove Albion`); both paths now decode identically. Also hardened the writer: a style-only edit that resolves back to the cell's existing xf (re-applying an identical style, or an empty `{}`) leaves the cell's original bytes untouched instead of rewriting (or dropping) the cell.
+- [x] Tests (`test/styles2.test.ts`, 24 tests): border/alignment round-trips through our own reader (all 13 border styles), dedup + reuse of existing borders/xf alignments, side-merge over an existing border, alignment surviving an unrelated numFmt patch, empty-object no-ops (byte-identical output), rich-text write + read incl. fonts, escaping and `xml:space`, rich-text shared strings from ExcelJS, eager-vs-streaming parity (inline + shared strings + the formula-string regression), ExcelJS and SheetJS cross-reads, preservation invariants (only the touched sheet + `styles.xml` change), and no-op byte identity on read.
+
+**Verification (executed, Node 24 / Windows):**
+
+| Check | Result |
+|---|---|
+| `pnpm test` | **136/136 passing** (112 pre-existing + 24 new) |
+| `pnpm typecheck` (TS 7) | clean |
+| `pnpm build` + `pnpm size` | ok — main entry **18.49 kB gzip** (budget 20 kB; +2.2 kB for borders + alignment + rich text) |
+| `pnpm validate:corpus` | **11/11** real files: read + no-op byte-identical + single-cell edit (LibreOffice gate runs in CI; not installed on this machine) |
+| ExcelJS cross-read | ExcelJS 4.4.0 opens the edited output and reads back borders (sides + colors; `diagonalUp`/`diagonalDown` land inside its `diagonal` model), alignment (`center` ↔ its `middle` alias) and rich-text runs with fonts |
+| SheetJS | parses every edited output; rich text flattens to the concatenated string |
+| Real-file check (`LET-Function-Example.xlsx`) | border/alignment/rich text applied to real styled cells; re-read shows untouched cells' formatting intact; only `xl/worksheets/sheet1.xml` + `xl/styles.xml` change |
+| Eager vs streaming parity | all 3443 cells of the edited real corpus file identical (incl. the rich-text cell); generated fixtures with shared-string rich text identical |
+
+> **Styles2 honesty notes:** (1) Border colors support ARGB (`rgb`) only — theme/indexed colors on pre-existing borders are preserved in the file but not exposed through the API. (2) `diagonalUp`/`diagonalDown` sit at the top level of our API (the OOXML shape); ExcelJS nests them inside its `diagonal` model and only persists them when the diagonal side has a style. (3) Alignment uses the OOXML vocabulary: `vertical: 'center'` reads back as `'middle'` in ExcelJS. (4) Rich text is written as inline strings (never shared strings); shared strings with runs are *read* as `{ richText }` but never *written* by us. (5) Run fonts model bold/italic/underline/size/color/name (`rFont`); other `<rPr>` properties are not modeled — rewriting a rich-text cell keeps only the modeled properties. (6) Cells whose string contains runs now read as `{ richText }` — code expecting the old flattened string can use `value.richText.map((r) => r.text).join('')`.
+
 **Verification (executed, Node 24 / Windows):**
 
 | Check | Result |
@@ -151,7 +174,7 @@ The streaming reader holds only a 64 KiB compressed chunk, fflate's 32 KiB windo
 | Values vs SheetJS | match on a real file (numbers, strings, booleans, formulas) |
 | Streaming vs eager | identical cells/types incl. dates and a formula, on generated + ExcelJS files |
 
-Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated ZIP entries (raw verbatim reuse), value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits, zip64/data-descriptor/encryption rejection, CRC validation), styles, merges, Blob adapters, the audit regression cases, streaming (value/type parity with the eager reader, the same hardening rejections, incremental decompression and a bounded-memory gate), and sheet structure (add/remove worksheets with OPC coherence, column widths/hidden, row heights, frozen panes, preservation invariants and SheetJS/ExcelJS cross-reads).
+Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated ZIP entries (raw verbatim reuse), value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits, zip64/data-descriptor/encryption rejection, CRC validation), styles (numFmt/font/fill plus borders/alignment/rich text in `styles2.test.ts`), merges, Blob adapters, the audit regression cases, streaming (value/type parity with the eager reader — including rich text and entity-decoded formula strings — the same hardening rejections, incremental decompression and a bounded-memory gate), and sheet structure (add/remove worksheets with OPC coherence, column widths/hidden, row heights, frozen panes, preservation invariants and SheetJS/ExcelJS cross-reads).
 
 ### Write benchmark — raw deflate reuse (5000 × 8 worksheet, same file as below)
 
@@ -171,7 +194,7 @@ Same inputs, interleaved A/B: the v0.3 writer (`fflate.zipSync` over ALL entries
 
 | Library | Read (median) | Published size (gzip, incl. deps) | Transitive deps |
 |---|---|---|---|
-| **sheet-lite** | **~150 ms** | **~31 kB** (19.5 kB main entry + fflate 11.8 kB; streaming adds ~6 kB on demand) | **0** |
+| **sheet-lite** | **~150 ms** | **~30 kB** (18.5 kB main entry + fflate 11.8 kB; streaming adds ~6 kB on demand) | **0** |
 | ExcelJS | ~175–230 ms | 249.9 kB | 9 |
 | SheetJS (`xlsx`) | ~210–260 ms | 136.4 kB | 7 |
 
@@ -191,9 +214,10 @@ Same inputs, interleaved A/B: the v0.3 writer (`fflate.zipSync` over ALL entries
 | **runtime** ✅ | Browser / edge (Deno, Workers) adapters; reuse original deflate streams | Raw ZIP layer with verbatim reuse (byte-identical untouched entries; zip64/descriptor rejection); `readBlob`/`toBlob`/`download` + ESM dist verified free of static `node:` imports; 56/56 tests. Workers/Deno example itself not exercised (Blob API smoke-tested on Node) |
 | **stream** ✅ | Streaming reads for large files | Bounded-memory read-only API (`sheet-lite/stream`): 100k × 8 rows at **10.2 MB** live heap vs **673 MB** eager, values identical to the eager reader; same hardening rejections through the streaming path; main bundle kept under budget via a lazy chunk. 81/81 tests |
 | **sheets** ✅ | Add/remove worksheets + sheet-structure editing (ExcelJS-compatible API) | `addWorksheet` / `removeWorksheet` with full OPC registration/coherence, `Column` width/hidden, `Row.height`, `worksheet.views` (frozen panes) — all surgical; untouched parts byte-identical, verified on all 11 real-corpus files; SheetJS parses the results and ExcelJS reads the new structures back. 112/112 tests |
+| **styles2** ✅ | Borders + alignment + rich text (read & write, ExcelJS-compatible shapes) | `cell.border` via the `<borders>` container (dedup + reuse of existing styles, `countEdit`, `applyBorder`), `cell.alignment` inside the `xf` (semantic dedup, survives unrelated patches), rich text written as inline `<r>` runs and read as `{ richText }` from inline AND shared strings with one collector shared by all three readers; eager/streaming parity incl. a decoded-`t="str"` fix; 136/136 tests; 18.49 kB gzip main entry |
 | **real-world** 🟡 | Real-file corpus + LibreOffice gate in CI | Infra ready (`test/fixtures/real/`, `test/corpus.test.ts`, `scripts/validate-corpus.mjs`, `pnpm validate:corpus`); 4 real files pass read/edit/no-op. Pending: LibreOffice CI job + more files |
 
-> Milestones are named, not versioned. Published npm versions continue sequentially: `0.3.0` = styles; **`0.4.0` = runtime + stream + real-world corpus infrastructure + ZIP data-descriptor support**; **`0.5.0` = sheets structure (add/remove worksheets, columns, rows, views)**. The streaming API is additive and ships from a separate `sheet-lite/stream` subpath so the eager entry stays small.
+> Milestones are named, not versioned. Published npm versions continue sequentially: `0.3.0` = styles; **`0.4.0` = runtime + stream + real-world corpus infrastructure + ZIP data-descriptor support**; **`0.5.0` = sheets structure (add/remove worksheets, columns, rows, views)**; **`0.6.0` = styles2 (borders, alignment, rich text)**. The streaming API is additive and ships from a separate `sheet-lite/stream` subpath so the eager entry stays small.
 
 **Explicitly out of scope (for now):** `.xls`/`.xlsb`, encryption, formula evaluation, creating charts/pivots/images/macros (preserved, not created). Sheet-structure editing creates **plain worksheets only** — no charts, tables, drawings or conditional formatting on the new sheet (add them by editing later; existing parts are preserved).
 
@@ -219,15 +243,16 @@ src/
   api/worksheet.ts        # Worksheet: getCell / eachRow / addRow / getColumn / views
   api/cell.ts             # Cell
   api/column.ts           # Column (width / hidden / letter)
-  model/style.ts          # CellStyle / font / fill shapes
+  model/style.ts          # CellStyle / font / fill / border / alignment shapes
   model/view.ts           # SheetViewProps (frozen panes)
   xml/xml.ts              # tiny DOM XML reader + entity helpers
   xml/pull-parser.ts      # incremental XML pull-parser (streaming sheets + shared strings)
   reader/package-reader.ts# workbook, rels, shared strings, styles
   reader/sheet-parser.ts  # cells, rows, references, value decoding, cols/sheetViews spans
+  reader/rich-text.ts     # rich-text run collector shared by all three readers
   reader/stream-sheet.ts  # streaming worksheet: one row at a time
-  writer/sheet-writer.ts  # surgical patching: cells, merges, cols, row heights, panes, dimension
-  writer/style-registry.ts# styles.xml dedup registry (numFmt/font/fill)
+  writer/sheet-writer.ts  # surgical patching: cells (incl. rich text), merges, cols, row heights, panes, dimension
+  writer/style-registry.ts# styles.xml dedup registry (numFmt/font/fill/border + xf alignment)
   opc/package-edit.ts     # surgical edits on content-types / rels / workbook.xml
   model/value.ts          # CellValue / ValueType
   model/dates.ts          # Excel serial <-> Date (1900/1904)
@@ -245,6 +270,7 @@ test/
   values.test.ts          # value reading + types
   compat.test.ts          # real ExcelJS file vs SheetJS
   sheets.test.ts          # add/remove worksheets, columns, rows, frozen panes
+  styles2.test.ts         # borders, alignment, rich text (round-trips + parity + preservation)
   zip-hardening.test.ts   # security limits
   raw-zip.test.ts         # raw-layer: verbatim reuse, byte-identity, zip64/descriptor/CRC rejection
   stream.test.ts          # streaming parity + hardening + bounded-memory gate

@@ -17,7 +17,8 @@ When you open an Excel file, change a value and save, most libraries rebuild the
 - [x] **Sheets:** `wb.addWorksheet(name, options?)` / `wb.removeWorksheet(nameOrId)` — full OPC registration, works on files without `styles.xml`
 - [x] **Columns & rows:** `ws.getColumn(n).width` / `.hidden`, `row.height` — surgical `<cols>` / `<row ht>` patching
 - [x] **Frozen panes:** `ws.views = [{ state: 'frozen', xSplit: 2, ySplit: 3 }]` (ExcelJS-compatible, read back on re-open)
-- [x] **Styles:** `cell.numFmt`, `cell.font` (bold/italic/size/name/color), `cell.fill` (solid/pattern)
+- [x] **Styles:** `cell.numFmt`, `cell.font` (bold/italic/size/name/color), `cell.fill` (solid/pattern), `cell.border` (all 13 OOXML line styles, deduped in `styles.xml`), `cell.alignment` (horizontal/vertical/wrap/indent/rotation…)
+- [x] **Rich text:** read **and** write `{ richText: [{ text, font? }, …] }` — inline `<r>` runs on write, `{ richText }` on read from inline and shared strings; plain strings stay plain
 - [x] **Merges:** `worksheet.mergeCells('A1:C1')` / `unmergeCells`
 - [x] Patch-only write: if nothing changed, the original bytes are returned verbatim
 - [x] Security by design: path-traversal, entry-count, size and compression-ratio limits
@@ -48,6 +49,19 @@ ws.getCell('A1').font = { bold: true };
 ws.getCell('A3').value = new Date();
 ws.mergeCells('C1:D1');
 ws.addRow(['nuevo', 7]);
+
+// borders + alignment + rich text (ExcelJS-compatible shapes)
+ws.getCell('C3').border = {
+  top: { style: 'thin', color: { argb: 'FF00B0F0' } },
+  bottom: { style: 'double' },
+};
+ws.getCell('C3').alignment = { horizontal: 'center', vertical: 'center', wrapText: true };
+ws.getCell('D4').value = {
+  richText: [
+    { text: 'Total: ' },
+    { text: '1 234 €', font: { bold: true, color: 'FFFF0000' } },
+  ],
+};
 
 // structure — add/remove sheets, columns, rows, frozen panes
 const summary = wb.addWorksheet('Summary');
@@ -91,7 +105,7 @@ Generated a 5000 × 8 workbook with ExcelJS and read it back:
 
 | Library | Read (median) | Published size (gzip, incl. deps) | Transitive deps |
 |---|---|---|---|
-| **sheet-lite** | **149 ms** | **~31 kB** (19.5 kB main entry + fflate 11.8 kB; streaming adds ~6 kB on demand) | **0** |
+| **sheet-lite** | **149 ms** | **~30 kB** (18.5 kB main entry + fflate 11.8 kB; streaming adds ~6 kB on demand) | **0** |
 | ExcelJS | 192 ms | 249.9 kB | 9 |
 | SheetJS (`xlsx`) | 218 ms | 136.4 kB | 7 |
 
@@ -104,8 +118,7 @@ Run it yourself: `pnpm bench`
 - `addWorksheet` creates **plain** worksheets only (values, optional frozen panes) — no charts, tables, images or conditional formatting on new sheets.
 - `removeWorksheet` rejects removing the **last remaining sheet** (a workbook must keep at least one sheet) with the coded error `LAST_SHEET`. Orphan parts that only the removed sheet referenced (e.g. a drawing) stay in the package unreferenced.
 - Only the first `sheetView` of a sheet is editable (`views`); other views/attributes are preserved as-is.
-- Styles subset: number formats, bold/italic/size/name/color, solid fills. No borders or cell alignment yet (column widths, hidden columns and row heights **are** supported).
-- Charts, pivot tables, images, comments and conditional formatting are **preserved, not created**.
+- Styles subset: number formats, bold/italic/size/name/color, solid fills, borders and cell alignment. Border colors are ARGB-only (theme colors preserved but not exposed); rich-text run fonts model bold/italic/underline/size/color/name. Charts, pivot tables, images, comments and conditional formatting are **preserved, not created**.
 - No `.xls` / `.xlsb`, no encryption, no CSV.
 - No formula evaluation (cached results only — same as ExcelJS and SheetJS).
 - **Streaming mode is read-only.** `sheet-lite/stream` (and `Workbook.openStream`) reads rows with bounded memory but cannot patch or write; editing needs the eager `Workbook`. Streaming reads `sharedStrings.xml` into memory (the string table, not a DOM), so sheets with millions of *unique* strings are bounded by that table, not by the row count. `ReadableStream` input is not supported (ZIP has no seeking and the EOCD is at the end) — pass a Node file path or a buffer.

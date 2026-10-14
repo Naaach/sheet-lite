@@ -1,5 +1,5 @@
 import { typeOf, type CellValue, type ValueTypeName } from '../model/value';
-import type { FillProps, FontProps } from '../model/style';
+import type { AlignmentProps, BorderProps, FillProps, FontProps } from '../model/style';
 import { refToCoords } from '../reader/sheet-parser';
 import type { Worksheet } from './worksheet';
 
@@ -55,6 +55,22 @@ export class Cell {
 
   set fill(value: FillProps) {
     this.worksheet.setCellStyle(this.ref, { fill: value });
+  }
+
+  get border(): BorderProps {
+    return this.worksheet.getCellBorder(this.ref);
+  }
+
+  set border(value: BorderProps) {
+    this.worksheet.setCellStyle(this.ref, { border: value });
+  }
+
+  get alignment(): AlignmentProps {
+    return this.worksheet.getCellAlignment(this.ref);
+  }
+
+  set alignment(value: AlignmentProps) {
+    this.worksheet.setCellStyle(this.ref, { alignment: value });
   }
 
   toString(): string {

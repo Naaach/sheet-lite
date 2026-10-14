@@ -1,7 +1,7 @@
 import { dateToSerial } from '../model/dates';
 import { escapeXml } from '../xml/xml';
-import type { CellValue } from '../model/value';
-import type { CellStyleOverrides } from '../model/style';
+import type { CellValue, RichTextRun } from '../model/value';
+import type { CellStyleOverrides, FontProps } from '../model/style';
 import type { SheetViewProps } from '../model/view';
 import { coordsToRef, refToCoords, type ColRecord, type ParsedSheet } from '../reader/sheet-parser';
 import type { StyleRegistry } from './style-registry';
@@ -34,6 +34,30 @@ export interface SheetPatch {
   views: SheetViewProps[] | null;
 }
 
+/** `<rPr>` children for one rich-text run (run fonts use `rFont`, not `name`). */
+function runPrXml(font: FontProps): string {
+  let xml = '';
+  if (font.bold) xml += '<b/>';
+  if (font.italic) xml += '<i/>';
+  if (font.underline) xml += '<u/>';
+  if (font.size !== undefined) xml += `<sz val="${font.size}"/>`;
+  if (font.color) xml += `<color rgb="${font.color}"/>`;
+  if (font.name) xml += `<rFont val="${escapeXml(font.name)}"/>`;
+  return xml ? `<rPr>${xml}</rPr>` : '';
+}
+
+/** `<r>` runs of a rich-text inline string. */
+function richTextXml(runs: RichTextRun[]): string {
+  if (runs.length === 0) return '<t/>';
+  return runs
+    .map((run) => {
+      const text = run.text ?? '';
+      const preserve = /^\s|\s$|[\n\t]/.test(text) ? ' xml:space="preserve"' : '';
+      return `<r>${run.font ? runPrXml(run.font) : ''}<t${preserve}>${escapeXml(text)}</t></r>`;
+    })
+    .join('');
+}
+
 /** Serialize a single cell into OOXML `<c>` markup. `''` removes the cell. */
 export function generateCellXml(
   ref: string,
@@ -58,6 +82,9 @@ export function generateCellXml(
       resultText = String(result);
     }
     return `<c r="${ref}"${sAttr}><f>${escapeXml(value.formula)}</f><v>${escapeXml(resultText)}</v></c>`;
+  }
+  if (typeof value === 'object' && 'richText' in value) {
+    return `<c r="${ref}" t="inlineStr"${sAttr}><is>${richTextXml(value.richText)}</is></c>`;
   }
 
   const str = String(value);
@@ -101,6 +128,12 @@ export function serializeSheet(
     const styleIndex =
       edit.style && registry ? registry.resolveIndex(baseIndex, edit.style) : baseIndex;
     const value = edit.hasValue ? edit.value : existing ? existing.value : null;
+    if (!edit.hasValue && styleIndex === baseIndex) {
+      // Style-only edit that resolves to the cell's existing style (e.g. an
+      // empty override, or a border/alignment identical to the base one):
+      // nothing changed, keep the original bytes.
+      continue;
+    }
     let xml: string;
     if ((value === null || value === undefined) && edit.style && styleIndex) {
       // An empty cell that only carries styling still needs to exist.

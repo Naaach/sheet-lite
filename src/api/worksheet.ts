@@ -8,7 +8,13 @@ import {
 } from '../reader/sheet-parser';
 import { serializeSheet, type CellEdit, type ColEdit, type SheetPatch } from '../writer/sheet-writer';
 import type { StyleRegistry } from '../writer/style-registry';
-import type { CellStyleOverrides, FillProps, FontProps } from '../model/style';
+import type {
+  AlignmentProps,
+  BorderProps,
+  CellStyleOverrides,
+  FillProps,
+  FontProps,
+} from '../model/style';
 import type { SheetViewProps } from '../model/view';
 import { type CellValue } from '../model/value';
 import { SheetLiteError } from '../zip/errors';
@@ -43,6 +49,9 @@ export class Row {
  * A single sheet. Reading values and patching cells, styles and merges while
  * preserving everything else in the sheet XML.
  */
+const hasKeys = (value: unknown): boolean =>
+  typeof value === 'object' && value !== null && Object.keys(value).length > 0;
+
 export class Worksheet {
   readonly name: string;
   readonly id: number;
@@ -251,6 +260,18 @@ export class Worksheet {
     return edit?.style?.fill ? { ...base, ...edit.style.fill } : base;
   }
 
+  getCellBorder(ref: string): BorderProps {
+    const base = this.registry ? this.registry.borderProps(this.baseStyleIndex(ref)) ?? {} : {};
+    const edit = this.changes.get(ref);
+    return edit?.style?.border ? { ...base, ...edit.style.border } : base;
+  }
+
+  getCellAlignment(ref: string): AlignmentProps {
+    const base = this.registry ? this.registry.alignmentProps(this.baseStyleIndex(ref)) ?? {} : {};
+    const edit = this.changes.get(ref);
+    return edit?.style?.alignment ? { ...base, ...edit.style.alignment } : base;
+  }
+
   setCellValue(ref: string, value: CellValue): void {
     const key = ref.toUpperCase();
     const existing = this.changes.get(key) ?? { hasValue: false, value: null };
@@ -264,6 +285,20 @@ export class Worksheet {
     if (patch.numFmt !== undefined) style.numFmt = patch.numFmt;
     if (patch.font) style.font = { ...style.font, ...patch.font };
     if (patch.fill) style.fill = { ...style.fill, ...patch.fill };
+    if (patch.border) style.border = { ...style.border, ...patch.border };
+    if (patch.alignment) style.alignment = { ...style.alignment, ...patch.alignment };
+    if (
+      !existing.hasValue &&
+      style.numFmt === undefined &&
+      !hasKeys(style.font) &&
+      !hasKeys(style.fill) &&
+      !hasKeys(style.border) &&
+      !hasKeys(style.alignment)
+    ) {
+      // A style-only edit with no effective overrides: don't dirty the sheet.
+      if (existing.style !== undefined) this.changes.delete(key);
+      return;
+    }
     this.changes.set(key, { ...existing, style });
   }
 

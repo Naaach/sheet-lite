@@ -1,6 +1,13 @@
 import { parseXml, child, childrenOf, escapeXml, type XmlNode } from '../xml/xml';
 import { SheetLiteError } from '../zip/errors';
-import type { CellStyleOverrides, FillProps, FontProps } from '../model/style';
+import type {
+  AlignmentProps,
+  BorderProps,
+  BorderSideProps,
+  CellStyleOverrides,
+  FillProps,
+  FontProps,
+} from '../model/style';
 
 /** Common built-in number-format codes and their ids. */
 const BUILTIN_NUMFMT: Record<string, number> = {
@@ -32,10 +39,73 @@ interface XfDesc {
   fontId: number;
   fillId: number;
   borderId: number;
+  /** Parsed `<alignment/>` child of the xf (absent = no alignment). */
+  alignmentProps?: AlignmentProps;
   raw: string;
 }
 
 const normalize = (xml: string): string => xml.replace(/>\s+</g, '><').trim();
+
+/** Semantic equality of two alignment models (undefined ≡ no alignment). */
+function alignmentEquals(a: AlignmentProps | undefined, b: AlignmentProps | undefined): boolean {
+  const keys = [
+    'horizontal',
+    'vertical',
+    'wrapText',
+    'shrinkToFit',
+    'indent',
+    'textRotation',
+    'readingOrder',
+  ] as const;
+  return keys.every((key) => (a?.[key] ?? undefined) === (b?.[key] ?? undefined));
+}
+
+/** `<left/>` … `<diagonal/>` children of a `<border>`, in schema order. */
+const BORDER_SIDES = ['left', 'right', 'top', 'bottom', 'diagonal'] as const;
+
+function sideProps(node: XmlNode | undefined): BorderSideProps | undefined {
+  if (!node) return undefined;
+  const style = node.attrs.style;
+  const rgb = child(node, 'color')?.attrs.rgb;
+  if (!style && !rgb) return undefined; // `<left/>` with no style/color: nothing to expose
+  const side: BorderSideProps = {};
+  if (style) side.style = style as BorderSideProps['style'];
+  if (rgb) side.color = { argb: rgb };
+  return side;
+}
+
+function parseBorderNode(node: XmlNode): BorderProps {
+  const props: BorderProps = {};
+  for (const name of BORDER_SIDES) {
+    const side = sideProps(child(node, name));
+    if (side) props[name] = side;
+  }
+  if (node.attrs.diagonalUp === '1' || node.attrs.diagonalUp === 'true') props.diagonalUp = true;
+  if (node.attrs.diagonalDown === '1' || node.attrs.diagonalDown === 'true') props.diagonalDown = true;
+  return props;
+}
+
+function parseAlignmentNode(node: XmlNode): AlignmentProps {
+  const props: AlignmentProps = {};
+  const a = node.attrs;
+  if (a.horizontal !== undefined) props.horizontal = a.horizontal as AlignmentProps['horizontal'];
+  if (a.vertical !== undefined) props.vertical = a.vertical as AlignmentProps['vertical'];
+  if (a.wrapText !== undefined) props.wrapText = a.wrapText === '1' || a.wrapText === 'true';
+  if (a.shrinkToFit !== undefined) props.shrinkToFit = a.shrinkToFit === '1' || a.shrinkToFit === 'true';
+  if (a.indent !== undefined) {
+    const indent = Number(a.indent);
+    if (Number.isFinite(indent)) props.indent = indent;
+  }
+  if (a.textRotation !== undefined) {
+    const rotation = Number(a.textRotation);
+    if (Number.isFinite(rotation)) props.textRotation = rotation;
+  }
+  if (a.readingOrder !== undefined) {
+    const order = Number(a.readingOrder);
+    if (order === 0 || order === 1 || order === 2) props.readingOrder = order;
+  }
+  return props;
+}
 
 function slice(xml: string, node: XmlNode): string {
   return xml.slice(node.start, node.end);
@@ -71,6 +141,8 @@ export class StyleRegistry {
   private numFmtsNode: XmlNode | null;
   private fontsNode: XmlNode;
   private fillsNode: XmlNode;
+  private bordersNode: XmlNode | null;
+  private cellStyleXfsNode: XmlNode | null;
   private cellXfsNode: XmlNode;
 
   private numFmtByCode = new Map<string, number>();
@@ -79,11 +151,16 @@ export class StyleRegistry {
 
   private fontRaws: string[] = [];
   private fillRaws: string[] = [];
+  /** Canonical border XML per `borders` index (existing + added). */
+  private borderRaws: string[] = [];
+  /** Parsed border props per `borders` index (existing + added). */
+  private borderPropsList: Array<BorderProps | undefined> = [];
   private xfDescs: XfDesc[] = [];
 
   private addedNumFmts: { id: number; code: string }[] = [];
   private addedFonts: string[] = [];
   private addedFills: string[] = [];
+  private addedBorders: string[] = [];
   private addedXfs: string[] = [];
 
   constructor(private xml: string) {
@@ -114,15 +191,25 @@ export class StyleRegistry {
     this.fontsNode = fontsNode;
     this.fillsNode = fillsNode;
     this.cellXfsNode = cellXfsNode;
+    this.bordersNode = child(styleSheet, 'borders') ?? null;
+    this.cellStyleXfsNode = child(styleSheet, 'cellStyleXfs') ?? null;
 
     for (const font of childrenOf(fontsNode, 'font')) this.fontRaws.push(normalize(slice(xml, font)));
     for (const fill of childrenOf(fillsNode, 'fill')) this.fillRaws.push(normalize(slice(xml, fill)));
+    if (this.bordersNode) {
+      for (const border of childrenOf(this.bordersNode, 'border')) {
+        this.borderRaws.push(normalize(slice(xml, border)));
+        this.borderPropsList.push(parseBorderNode(border));
+      }
+    }
     for (const xf of childrenOf(cellXfsNode, 'xf')) {
+      const alignmentNode = child(xf, 'alignment');
       this.xfDescs.push({
         numFmtId: Number(xf.attrs.numFmtId ?? '0'),
         fontId: Number(xf.attrs.fontId ?? '0'),
         fillId: Number(xf.attrs.fillId ?? '0'),
         borderId: Number(xf.attrs.borderId ?? '0'),
+        alignmentProps: alignmentNode ? parseAlignmentNode(alignmentNode) : undefined,
         raw: slice(xml, xf),
       });
     }
@@ -130,7 +217,12 @@ export class StyleRegistry {
 
   get changed(): boolean {
     return (
-      this.addedNumFmts.length + this.addedFonts.length + this.addedFills.length + this.addedXfs.length > 0
+      this.addedNumFmts.length +
+        this.addedFonts.length +
+        this.addedFills.length +
+        this.addedBorders.length +
+        this.addedXfs.length >
+      0
     );
   }
 
@@ -168,9 +260,29 @@ export class StyleRegistry {
     return { type: 'pattern', pattern: pattern[1], fgColor: fg?.[1] };
   }
 
+  /** Border props of a `cellXfs` entry (sides with a style/color only). */
+  borderProps(styleIndex: number): BorderProps | undefined {
+    const xf = this.xfDescs[styleIndex];
+    if (!xf) return undefined;
+    const props = this.borderPropsList[xf.borderId];
+    return props && Object.keys(props).length > 0 ? { ...props } : undefined;
+  }
+
+  /** Alignment of a `cellXfs` entry (from its `<alignment/>` child). */
+  alignmentProps(styleIndex: number): AlignmentProps | undefined {
+    const props = this.xfDescs[styleIndex]?.alignmentProps;
+    return props ? { ...props } : undefined;
+  }
+
   /** Resolve a cell's final `cellXfs` index given style overrides. */
   resolveIndex(baseIndex: number, overrides: CellStyleOverrides): number {
-    const base = this.xfDescs[baseIndex] ?? { numFmtId: 0, fontId: 0, fillId: 0, borderId: 0, raw: '' };
+    const base = this.xfDescs[baseIndex] ?? {
+      numFmtId: 0,
+      fontId: 0,
+      fillId: 0,
+      borderId: 0,
+      raw: '',
+    };
     let { numFmtId, fontId, fillId, borderId } = base;
     let changed = false;
 
@@ -186,20 +298,50 @@ export class StyleRegistry {
       fillId = this.fillIdFor(overrides.fill);
       changed = true;
     }
+    // Borders and alignment live per-xf, so the base xf's values are merged
+    // (never dropped): adding one side or one alignment prop keeps the others.
+    const baseBorder = this.borderPropsList[base.borderId];
+    if (overrides.border && Object.keys(overrides.border).length > 0) {
+      borderId = this.borderIdFor({ ...baseBorder, ...overrides.border }, base.borderId);
+      changed = true;
+    }
+    const baseAlignment = base.alignmentProps;
+    const mergedAlignment = overrides.alignment
+      ? { ...baseAlignment, ...overrides.alignment }
+      : baseAlignment;
+    if (overrides.alignment) changed = true;
     if (!changed) return baseIndex;
 
+    // Two xfs are the same style only when ids AND alignment match.
     const existing = this.xfDescs.findIndex(
-      (xf) => xf.numFmtId === numFmtId && xf.fontId === fontId && xf.fillId === fillId && xf.borderId === borderId,
+      (xf) =>
+        xf.numFmtId === numFmtId &&
+        xf.fontId === fontId &&
+        xf.fillId === fillId &&
+        xf.borderId === borderId &&
+        alignmentEquals(xf.alignmentProps, mergedAlignment),
     );
     if (existing !== -1) return existing;
 
     const apply =
       (overrides.numFmt !== undefined ? ' applyNumberFormat="1"' : '') +
       (overrides.font ? ' applyFont="1"' : '') +
-      (overrides.fill ? ' applyFill="1"' : '');
-    const raw = `<xf numFmtId="${numFmtId}" fontId="${fontId}" fillId="${fillId}" borderId="${borderId}" xfId="0"${apply}/>`;
+      (overrides.fill ? ' applyFill="1"' : '') +
+      (overrides.border && Object.keys(overrides.border).length > 0 ? ' applyBorder="1"' : '') +
+      (overrides.alignment ? ' applyAlignment="1"' : '');
+    const alignmentXml = this.alignmentXmlFor(mergedAlignment);
+    const attrs =
+      `<xf numFmtId="${numFmtId}" fontId="${fontId}" fillId="${fillId}" borderId="${borderId}" xfId="0"${apply}`;
+    const raw = alignmentXml ? `${attrs}>${alignmentXml}</xf>` : `${attrs}/>`;
     this.addedXfs.push(raw);
-    this.xfDescs.push({ numFmtId, fontId, fillId, borderId, raw });
+    this.xfDescs.push({
+      numFmtId,
+      fontId,
+      fillId,
+      borderId,
+      alignmentProps: Object.keys(mergedAlignment ?? {}).length > 0 ? mergedAlignment : undefined,
+      raw,
+    });
     return this.xfDescs.length - 1;
   }
 
@@ -237,6 +379,27 @@ export class StyleRegistry {
     if (this.addedFills.length > 0) {
       edits.push(countEdit(this.xml, this.fillsNode, this.fillRaws.length));
       edits.push({ start: this.fillsNode.closeStart, end: this.fillsNode.closeStart, text: this.addedFills.join('') });
+    }
+
+    if (this.addedBorders.length > 0) {
+      if (this.bordersNode) {
+        // borderRaws already contains the added borders.
+        edits.push(countEdit(this.xml, this.bordersNode, this.borderRaws.length));
+        edits.push({
+          start: this.bordersNode.closeStart,
+          end: this.bordersNode.closeStart,
+          text: this.addedBorders.join(''),
+        });
+      } else {
+        // Container missing entirely: create it at its schema position
+        // (after <fills>, before <cellStyleXfs>/<cellXfs>).
+        const anchor = this.cellStyleXfsNode ?? this.cellXfsNode;
+        edits.push({
+          start: anchor.start,
+          end: anchor.start,
+          text: `<borders count="${this.borderRaws.length}">${this.borderRaws.join('')}</borders>`,
+        });
+      }
     }
 
     if (this.addedXfs.length > 0) {
@@ -296,5 +459,42 @@ export class StyleRegistry {
     this.addedFills.push(raw);
     this.fillRaws.push(raw);
     return this.fillRaws.length - 1;
+  }
+
+  private borderIdFor(props: BorderProps, baseBorderId: number): number {
+    const side = (name: string, edge: BorderSideProps | undefined): string => {
+      const style = edge?.style;
+      const argb = edge?.color?.argb;
+      if (!style && !argb) return `<${name}/>`;
+      if (!argb) return `<${name} style="${style}"/>`;
+      const color = `<color rgb="${argb}"/>`;
+      return style ? `<${name} style="${style}">${color}</${name}>` : `<${name}>${color}</${name}>`;
+    };
+    const diagAttrs =
+      (props.diagonalUp ? ' diagonalUp="1"' : '') + (props.diagonalDown ? ' diagonalDown="1"' : '');
+    const raw =
+      `<border${diagAttrs}>` +
+      BORDER_SIDES.map((name) => side(name, props[name])).join('') +
+      '</border>';
+    if (raw === '<border><left/><right/><top/><bottom/><diagonal/></border>') return baseBorderId;
+    const existing = this.borderRaws.indexOf(raw);
+    if (existing !== -1) return existing;
+    this.addedBorders.push(raw);
+    this.borderRaws.push(raw);
+    this.borderPropsList.push({ ...props });
+    return this.borderRaws.length - 1;
+  }
+
+  private alignmentXmlFor(props: AlignmentProps | undefined): string {
+    if (!props) return '';
+    let attrs = '';
+    if (props.horizontal !== undefined) attrs += ` horizontal="${escapeXml(props.horizontal)}"`;
+    if (props.vertical !== undefined) attrs += ` vertical="${escapeXml(props.vertical)}"`;
+    if (props.wrapText !== undefined) attrs += ` wrapText="${props.wrapText ? '1' : '0'}"`;
+    if (props.shrinkToFit !== undefined) attrs += ` shrinkToFit="${props.shrinkToFit ? '1' : '0'}"`;
+    if (props.indent !== undefined) attrs += ` indent="${props.indent}"`;
+    if (props.textRotation !== undefined) attrs += ` textRotation="${props.textRotation}"`;
+    if (props.readingOrder !== undefined) attrs += ` readingOrder="${props.readingOrder}"`;
+    return attrs ? `<alignment${attrs}/>` : '';
   }
 }

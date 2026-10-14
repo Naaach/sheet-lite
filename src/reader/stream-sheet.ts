@@ -15,8 +15,9 @@
  */
 import { decodeEntities } from '../xml/xml';
 import { XmlPullParser, type XmlEvent } from '../xml/pull-parser';
+import { RichTextRunCollector } from './rich-text';
 import { serialToDate } from '../model/dates';
-import { typeOf, type CellValue, type ValueTypeName } from '../model/value';
+import { typeOf, type CellValue, type ValueTypeName, type RichTextValue } from '../model/value';
 import { coordsToRef, refToCoords } from './sheet-parser';
 import type { PackageMeta } from './package-reader';
 
@@ -40,10 +41,11 @@ export interface StreamRow {
 
 interface CellBuild {
   attrs: Record<string, string>;
-  /** Raw (still entity-encoded) text of the first `<v>`, `<f>`, `<is>`. */
+  /** Raw (still entity-encoded) text of the first `<v>`, `<f>`. */
   v: string | undefined;
   f: string | undefined;
-  is: string | undefined;
+  /** Decoded `<is>` content: a plain string or `{ richText }` when runs exist. */
+  isValue: string | RichTextValue | undefined;
 }
 
 interface RowBuild {
@@ -62,6 +64,8 @@ export class SheetRowReader {
   /** Element currently collecting text (`v` / `f` / `is`). */
   private target: 'v' | 'f' | 'is' | null = null;
   private targetText = '';
+  /** Rich-text run collector for the current `<is>` (created lazily). */
+  private isCollector: RichTextRunCollector | null = null;
 
   constructor(private readonly meta: PackageMeta) {}
 
@@ -100,7 +104,8 @@ export class SheetRowReader {
 
   private handle(event: XmlEvent): StreamRow | null {
     if (event.kind === 'text') {
-      if (this.target) this.targetText += event.text;
+      if (this.target === 'is') this.isCollector?.text(event.text);
+      else if (this.target) this.targetText += event.text;
       return null;
     }
 
@@ -119,13 +124,20 @@ export class SheetRowReader {
         }
         case 'c': {
           if (!this.row) return null;
-          this.cell = { attrs: event.attrs, v: undefined, f: undefined, is: undefined };
+          this.cell = { attrs: event.attrs, v: undefined, f: undefined, isValue: undefined };
           if (event.selfClosing) this.finishCell();
           return null;
         }
-        case 'v':
-        case 'f':
         case 'is': {
+          if (!this.cell) return null;
+          this.isCollector = new RichTextRunCollector();
+          this.target = 'is';
+          this.targetText = '';
+          if (event.selfClosing) this.closeTarget();
+          return null;
+        }
+        case 'v':
+        case 'f': {
           if (!this.cell) return null;
           this.target = event.name;
           this.targetText = '';
@@ -133,7 +145,37 @@ export class SheetRowReader {
           return null;
         }
         default:
-          // `<t>` inside `<is>`, rich-text `<r>` runs, … keep collecting text.
+          // Rich-text structure inside `<is>`: runs, run properties, `<t>`.
+          if (this.target === 'is' && this.isCollector) {
+            switch (event.name) {
+              case 't':
+                this.isCollector.openT();
+                if (event.selfClosing) this.isCollector.closeT();
+                break;
+              case 'r':
+                this.isCollector.openRun();
+                if (event.selfClosing) this.isCollector.closeRun();
+                break;
+              case 'rPh':
+                this.isCollector.openSkip();
+                if (event.selfClosing) this.isCollector.closeSkip();
+                break;
+              case 'rPr':
+                this.isCollector.openRPr();
+                if (event.selfClosing) this.isCollector.closeRPr();
+                break;
+              case 'b':
+              case 'i':
+              case 'u':
+              case 'sz':
+              case 'color':
+              case 'rFont':
+                this.isCollector.fontElement(event.name, event.attrs);
+                break;
+              default:
+                break;
+            }
+          }
           return null;
       }
     }
@@ -147,6 +189,17 @@ export class SheetRowReader {
       case 'is':
         if (this.target === event.name) this.closeTarget();
         return null;
+      case 't':
+      case 'r':
+      case 'rPr':
+      case 'rPh':
+        if (this.target === 'is' && this.isCollector) {
+          if (event.name === 't') this.isCollector.closeT();
+          else if (event.name === 'r') this.isCollector.closeRun();
+          else if (event.name === 'rPh') this.isCollector.closeSkip();
+          else this.isCollector.closeRPr();
+        }
+        return null;
       case 'c':
         if (this.cell) this.finishCell();
         return null;
@@ -159,10 +212,12 @@ export class SheetRowReader {
 
   private closeTarget(): void {
     const cell = this.cell;
-    if (!cell) return;
-    if (this.target === 'v' && cell.v === undefined) cell.v = this.targetText;
-    else if (this.target === 'f' && cell.f === undefined) cell.f = this.targetText;
-    else if (this.target === 'is' && cell.is === undefined) cell.is = this.targetText;
+    if (this.target === 'v' && cell && cell.v === undefined) cell.v = this.targetText;
+    else if (this.target === 'f' && cell && cell.f === undefined) cell.f = this.targetText;
+    else if (this.target === 'is') {
+      if (cell && cell.isValue === undefined && this.isCollector) cell.isValue = this.isCollector.value();
+      this.isCollector = null;
+    }
     this.target = null;
     this.targetText = '';
   }
@@ -193,13 +248,14 @@ export class SheetRowReader {
     if (attrs.t === 's') {
       value = hasText ? this.meta.sharedStrings[Number(rawText)] ?? '' : '';
     } else if (attrs.t === 'inlineStr') {
-      value = cell.is !== undefined ? decodeEntities(cell.is) : '';
+      value = cell.isValue !== undefined ? cell.isValue : '';
     } else if (attrs.t === 'str') {
-      value = rawText ?? '';
+      // Formula-result strings are entity-encoded in the XML, like `<v>`.
+      value = rawText !== undefined ? decodeEntities(rawText) : '';
     } else if (attrs.t === 'b') {
       value = hasText ? rawText === '1' : null;
     } else if (attrs.t === 'e') {
-      value = hasText ? { error: rawText! } : null;
+      value = hasText ? { error: decodeEntities(rawText!) } : null;
     } else if (hasText) {
       const numeric = Number(rawText);
       value = this.meta.dateStyleIndexes.has(styleIndex)
