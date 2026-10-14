@@ -61,6 +61,24 @@ Generated a 5000 × 8 workbook with ExcelJS and read it back:
 
 Run it yourself: `pnpm bench`
 
+## Limitations (honest list)
+
+`sheet-lite` is narrower than ExcelJS/SheetJS by design:
+
+- Editing **existing** sheets only — no `addWorksheet` yet.
+- Styles subset: number formats, bold/italic/size/name/color, solid fills. No borders, alignment or row/column dimensions yet.
+- Charts, pivot tables, images, comments and conditional formatting are **preserved, not created**.
+- No `.xls` / `.xlsb`, no encryption, no CSV.
+- No formula evaluation (cached results only — same as ExcelJS and SheetJS).
+- No streaming reads yet: large files are loaded fully in memory.
+
+## Acknowledgements & legal
+
+- The implementation is **original**; the only runtime dependency is [`fflate`](https://github.com/101arrowz/fflate) (MIT).
+- [`exceljs`](https://github.com/exceljs/exceljs) and [`xlsx`](https://github.com/SheetJS/sheetjs) are **devDependencies used only to generate test fixtures and cross-check results** — they are never shipped in the published package.
+- Published-size figures come from [bundlephobia](https://bundlephobia.com) for the exact versions listed in `devDependencies`; read times are measured by [`scripts/bench.mjs`](scripts/bench.mjs) — reproduce with `pnpm bench`.
+- "Excel" is a trademark of Microsoft Corporation. ExcelJS and SheetJS are independent open-source projects; references to them in these docs are factual comparisons, not endorsements.
+
 ## Development
 
 ```bash

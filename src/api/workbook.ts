@@ -1,6 +1,7 @@
 import { strToU8, strFromU8 } from 'fflate';
 import { PartStore } from '../opc/part-store';
 import { readZip, writeZip } from '../zip/archive';
+import { SheetLiteError } from '../zip/errors';
 import { parseContentTypes, type ContentTypes } from '../opc/content-types';
 import { readPackageMeta, type PackageMeta } from '../reader/package-reader';
 import { StyleRegistry } from '../writer/style-registry';
@@ -47,9 +48,43 @@ export class Workbook {
     return new Workbook(new PartStore(readZip(toUint8(input))));
   }
 
+  /**
+   * Read a workbook from a `Blob`/`File` — browser, Deno and edge Workers
+   * (also available in Node, which has a global `Blob` since v18).
+   */
+  static async readBlob(blob: Blob): Promise<Workbook> {
+    return Workbook.read(await blob.arrayBuffer());
+  }
+
   async writeFile(path: string): Promise<void> {
     const { writeFile } = await import('node:fs/promises');
     await writeFile(path, this.toBuffer());
+  }
+
+  /** Serialize the workbook as a `Blob` (browser / Deno / Workers / Node ≥ 18). */
+  toBlob(): Blob {
+    return new Blob([this.toBuffer() as Uint8Array<ArrayBuffer>]);
+  }
+
+  /**
+   * Browser only: trigger a client-side download of the workbook.
+   * Throws a `SheetLiteError` (code `ENV_UNSUPPORTED`) outside a browser.
+   */
+  download(filename: string): void {
+    if (typeof document === 'undefined') {
+      throw new SheetLiteError(
+        'Workbook.download() is only available in a browser runtime (no `document` found). Use toBlob() instead.',
+        'ENV_UNSUPPORTED',
+      );
+    }
+    const url = URL.createObjectURL(this.toBlob());
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   get worksheets(): Worksheet[] {

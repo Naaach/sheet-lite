@@ -73,6 +73,7 @@ export class PartStore {
       entries: this.state.entries,
       byName: this.state.byName,
       raw: this.state.raw,
+      dirtyNames: new Set(this.state.dirty),
     };
   }
 

@@ -83,28 +83,51 @@ Runtime: Node (fs) + Browser (Blob)    <- TS, ESM + CJS
 - [x] Merges: `worksheet.mergeCells` / `unmergeCells`.
 - [x] TypeScript-first, ESM + CJS, runtime-agnostic core (filesystem via lazy `node:fs/promises`).
 
+### Runtime milestone — raw ZIP reuse + browser/edge adapters
+
+- [x] **Raw ZIP layer** (`src/zip/raw.ts`): hand-rolled local headers / central directory / EOCD parsing and a writer that reuses each untouched entry's ORIGINAL compressed bytes + CRC verbatim (only the edited part is re-compressed). Dependency-free container logic; CRC-32 (slicing-by-8) implemented in-house.
+- [x] **Rejected with a stable error instead of crashing:** zip64 (`ZIP_UNSUPPORTED`), data descriptors (bit 3), encryption (bit 0), unknown compression methods, multi-disk archives. Note: streaming-written files (e.g. `xlsx.writeStream`) that use bit-3 descriptors are therefore rejected on read.
+- [x] **All hardening kept, and strengthened:** path-traversal, entry-count, per-entry size, total size and compression-ratio limits are enforced on the ZIP structure BEFORE inflation; inflate output is preallocated to the declared (validated) size, so lying headers cannot over-allocate; every entry is CRC-32 verified.
+- [x] **Browser / edge adapters on `Workbook`:** `readBlob(blob)`, `toBlob()`, `download(filename)` (browser only, throws `ENV_UNSUPPORTED` elsewhere). `node:fs` stays lazy; the ESM dist contains no static `node:` references (verified by a test).
+- [x] Tests: no-op whole-file byte-identity via the raw path, per-entry verbatim reuse after an edit (independent central-directory walker), stored+deflate archives, zip64 / data-descriptor / encrypted / CRC-mismatch rejection, Blob adapters, dist scan.
+
 ### Verification (executed)
 
 | Check | Result |
 |---|---|
-| `pnpm test` | **29/29 passing** (incl. real ExcelJS-generated files) |
+| `pnpm test` | **56/56 passing** (12 files; incl. 35 pre-existing tests unchanged) |
 | `pnpm typecheck` (TS 7) | clean |
-| `pnpm build` (`tsdown`) | ESM 40.3 kB / **gzip 11.9 kB** (excl. `fflate`) |
+| `pnpm build` (`tsdown`) | ESM 57.3 kB / **gzip 16.6 kB** (excl. `fflate`; raw ZIP layer adds ~4 kB gzip) |
+| ESM dist static-`node:` scan | clean (`dist/index.mjs` has no `from "node:` / `require("node:`; only lazy `import("node:fs/promises")`) |
+| No-op round-trip | `Workbook.read(f).toBuffer()` returns the original bytes verbatim; `writeZip(readZip(f))` is byte-identical for archives without directory markers |
+| Preservation | after a single-cell edit, every untouched ZIP entry is byte-identical (local header + compressed bytes + CRC) |
 | Values vs SheetJS | match on a real file (numbers, strings, booleans, formulas) |
-| Preservation | data validations, conditional formatting and merges survive an edit |
-| Styles & merges | round-trip through our own reader; the result parses with SheetJS |
 
-Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated parts, value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits), styles, merges and the audit regression cases.
+Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated ZIP entries (raw verbatim reuse), value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits, zip64/data-descriptor/encryption rejection, CRC validation), styles, merges, Blob adapters and the audit regression cases.
 
-> An independent audit (see [`reports/audit.md`](../reports/audit.md)) was run against v0.3. Every finding was fixed and is covered by tests: invalid `mergeCells` placement (was emitted inside `<sheetData>`), 1900 leap-year off-by-one, date-format detection (locale prefixes vs accounting formats), positional cells without `r`, empty `<v>` read as `0`, out-of-range XML entities throwing, and ZIP inflation limits.
+### Write benchmark — raw deflate reuse (5000 × 8 worksheet, same file as below)
+
+Same inputs, interleaved A/B: the v0.3 writer (`fflate.zipSync` over ALL entries) vs the runtime writer (verbatim reuse of untouched entries).
+
+| Write scenario | v0.3 writer | runtime writer |
+|---|---|---|
+| Raw pass-through (`writeZip(readZip(f))`, nothing changed) | ~99 ms | **~0.1 ms** (~900x) |
+| Small part edited (e.g. metadata) | ~99 ms | **~0.2 ms** (~450x) |
+| One cell edited in the big sheet | ~99 ms | ~93–103 ms* |
+
+\* The edited sheet is ~85% of this file's decompressed bytes and must be re-compressed either way, so the win is bounded here; the reuse pays off whenever untouched parts dominate. Full write pipeline (read + edit one cell + serialize) measures ~250–290 ms, dominated by reading (~150 ms) and re-compressing the edited sheet. No-op writes through `Workbook.toBuffer()` return the original bytes without any ZIP work.
+
+> **Honesty notes:** (1) whole-file byte-identity via the raw path holds for archives without directory markers; directory-marker entries (e.g. `_rels/` in ExcelJS output) were already dropped by the previous reader and are still omitted from re-serialized output, while a no-op `toBuffer()` returns the original file verbatim for any input. (2) Fresh entries get a fixed DOS-epoch timestamp unless an `mtime` is provided (v0.3 stamped them with the current time via fflate). (3) The numbers above are medians on one machine (Node 24, Windows); cross-run variance was ±10–15%.
 
 ### Benchmark (5000 × 8 worksheet generated with ExcelJS)
 
 | Library | Read (median) | Published size (gzip, incl. deps) | Transitive deps |
 |---|---|---|---|
-| **sheet-lite** | **149 ms** | **~23.9 kB** (12.1 kB + fflate 11.8 kB) | **0** |
-| ExcelJS | 192 ms | 249.9 kB | 9 |
-| SheetJS (`xlsx`) | 218 ms | 136.4 kB | 7 |
+| **sheet-lite** | **~150 ms** | **~28.0 kB** (16.2 kB + fflate 11.8 kB) | **0** |
+| ExcelJS | ~175–230 ms | 249.9 kB | 9 |
+| SheetJS (`xlsx`) | ~210–260 ms | 136.4 kB | 7 |
+
+> An independent audit (see [`reports/audit.md`](../reports/audit.md)) was run against v0.3. Every finding was fixed and is covered by tests: invalid `mergeCells` placement (was emitted inside `<sheetData>`), 1900 leap-year off-by-one, date-format detection (locale prefixes vs accounting formats), positional cells without `r`, empty `<v>` read as `0`, out-of-range XML entities throwing, and ZIP inflation limits.
 
 > **Honesty note:** in the specific scenario we tested, **ExcelJS 4.4.0 preserved** the conditional formatting / data validation, so we do not assert the opposite in our own tests. The preservation guarantee is verified on *our* side (real files + byte-identical untouched parts).
 
@@ -117,8 +140,10 @@ Tests cover: reading every part, exact no-op round-trip, byte-identical preserva
 | **v0.1** ✅ | Read + lossless patch-only write | Round-trip tests green |
 | **v0.2** ✅ | Values API + editing (preserving) + real-file compatibility + benchmark | 25/25 tests; values match SheetJS; benchmark published |
 | **v0.3** ✅ | Styles API (`numFmt`/font/fill) + merges | 29/29 tests; output parses with SheetJS |
-| **v0.4** | Browser / edge (Deno, Workers) adapters; reuse original deflate streams | Example running on Workers + Deno; faster writes |
-| **v0.5** | Streaming reads for large files | 100k rows under a fixed memory ceiling |
+| **runtime** ✅ | Browser / edge (Deno, Workers) adapters; reuse original deflate streams | Raw ZIP layer with verbatim reuse (byte-identical untouched entries; zip64/descriptor rejection); `readBlob`/`toBlob`/`download` + ESM dist verified free of static `node:` imports; 56/56 tests. Workers/Deno example itself not exercised (Blob API smoke-tested on Node) |
+| **stream** | Streaming reads for large files | 100k rows under a fixed memory ceiling |
+
+> Milestones are named, not versioned. Published npm versions continue sequentially (`0.3.0` = styles, `0.4.0` ≈ runtime, `0.5.0` ≈ stream).
 
 **Explicitly out of scope (for now):** `.xls`/`.xlsb`, encryption, formula evaluation, creating charts/pivots/images/macros (preserved, not created).
 
@@ -138,7 +163,7 @@ pnpm build       # tsdown -> dist/
 ```
 src/
   index.ts                # public API
-  api/workbook.ts         # Workbook: read / toBuffer / worksheets
+  api/workbook.ts         # Workbook: read / readBlob / toBuffer / toBlob / download / worksheets
   api/worksheet.ts        # Worksheet: getCell / eachRow / addRow
   api/cell.ts             # Cell
   xml/xml.ts              # tiny XML reader + entity helpers
@@ -147,8 +172,9 @@ src/
   writer/sheet-writer.ts  # surgical cell patching
   model/value.ts          # CellValue / ValueType
   model/dates.ts          # Excel serial <-> Date (1900/1904)
-  zip/archive.ts          # ZIP read/write over fflate + safety limits
-  zip/errors.ts           # SheetLiteError / ZipSecurityError
+  zip/raw.ts              # raw ZIP container: parse/serialize, verbatim entry reuse, CRC-32, hardening
+  zip/archive.ts          # ZIP facade: readZip/writeZip on the raw layer + safety limits
+  zip/errors.ts           # SheetLiteError / ZipSecurityError / ZipUnsupportedError
   opc/part-store.ts       # in-memory parts + dirty tracking
   opc/content-types.ts    # [Content_Types].xml parser
   opc/relationships.ts    # relationship path resolution
@@ -159,6 +185,9 @@ test/
   values.test.ts          # value reading + types
   compat.test.ts          # real ExcelJS file vs SheetJS
   zip-hardening.test.ts   # security limits
+  raw-zip.test.ts         # raw-layer: verbatim reuse, byte-identity, zip64/descriptor/CRC rejection
+  browser-adapters.test.ts# readBlob / toBlob / download
+  dist.test.ts            # built ESM has no static node: imports
   opc.test.ts             # content-types + paths
-scripts/bench.mjs         # size + read benchmark
+scripts/bench.mjs         # size + read + write benchmarks (incl. raw-reuse scenarios)
 ```

@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
-import { Workbook } from '../dist/index.mjs';
+import { Workbook, readZip, writeZip } from '../dist/index.mjs';
 
 const ROWS = 5000;
 const COLS = 8;
@@ -64,6 +64,46 @@ const results = [
 
 console.log('Read time (median of 5):');
 for (const r of results) console.log(`  ${r.label.padEnd(12)} ${r.median.toFixed(1)} ms`);
+
+// WRITE benchmark: open the generated file, edit one cell, serialize.
+// Untouched entries are carried over verbatim (raw deflate reuse).
+const writeResults = [
+  await time('sheet-lite write', 5, () => {
+    const wb = Workbook.read(file);
+    wb.getWorksheet('Data').getCell('B2').value = 987654.321;
+    return wb.toBuffer();
+  }),
+  await time('ExcelJS write', 5, async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(file);
+    wb.getWorksheet('Data').getCell('B2').value = 987654.321;
+    return Buffer.from(await wb.xlsx.writeBuffer());
+  }),
+];
+
+console.log('\nWrite time (read + edit one cell + serialize, median of 5):');
+for (const r of writeResults) console.log(`  ${r.label.padEnd(12)} ${r.median.toFixed(1)} ms`);
+
+// Serialize-only (workbooks pre-built, so read/parse cost is excluded).
+// The dirty sheet is ~85% of this file, so re-compressing it dominates the
+// first case; editing a SMALL part is where verbatim reuse shines.
+const editedBig = Workbook.read(file);
+editedBig.getWorksheet('Data').getCell('B2').value = 987654.321;
+const editedSmall = Workbook.read(file);
+editedSmall.parts().set(
+  'docProps/core.xml',
+  new TextEncoder().encode(new TextDecoder().decode(editedSmall.parts().get('docProps/core.xml')).replace('sheet-lite', 'sheet-lite!')),
+);
+const rawArchive = readZip(file);
+
+const zipOnly = [
+  await time('serialize: one cell edited', 7, () => editedBig.toBuffer()),
+  await time('serialize: small part edited', 7, () => editedSmall.toBuffer()),
+  await time('serialize: raw pass-through', 7, () => writeZip(rawArchive)),
+];
+
+console.log('\nSerialize only (toBuffer on a pre-built workbook, median of 7):');
+for (const r of zipOnly) console.log(`  ${r.label.padEnd(28)} ${r.median.toFixed(1)} ms`);
 
 const distGzip = gzipSync(readFileSync(fileURLToPath(new URL('../dist/index.mjs', import.meta.url)))).length / 1024;
 console.log('\nPublished size (gzipped, whole package incl. deps):');

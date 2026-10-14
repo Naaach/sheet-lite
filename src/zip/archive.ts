@@ -1,5 +1,17 @@
-import { unzipSync, zipSync, type Zippable, type ZipOptions } from 'fflate';
-import { ZipSecurityError } from './errors';
+import {
+  parseRawZip,
+  serializeRawZip,
+  isSafeEntryName,
+  DEFAULT_LIMITS,
+  type RawEntrySource,
+  type RawWriteEntry,
+  type ReadLimits,
+} from './raw';
+
+// Re-exported for backward compatibility: `archive` was the only ZIP module
+// before the raw layer was introduced (the public API exports these from here).
+export { isSafeEntryName, DEFAULT_LIMITS };
+export type { ReadLimits, RawEntrySource };
 
 export interface ZipEntry {
   /** Normalized entry path inside the archive (forward slashes). */
@@ -8,25 +20,14 @@ export interface ZipEntry {
   data: Uint8Array;
   /** Last modification time, when known. */
   mtime?: Date;
+  /**
+   * Original raw representation (compressed bytes + CRC + headers), when the
+   * entry was read from a file. While `data` still is the original buffer,
+   * `writeZip` reuses the original compressed bytes verbatim instead of
+   * re-compressing the entry.
+   */
+  source?: RawEntrySource;
 }
-
-export interface ReadLimits {
-  /** Maximum number of entries allowed in the archive. */
-  maxEntries: number;
-  /** Maximum total decompressed size across all entries (bytes). */
-  maxTotalUncompressed: number;
-  /** Maximum decompressed size for a single entry (bytes). */
-  maxEntryUncompressed: number;
-  /** Maximum tolerated overall compression ratio (decompressed / compressed). */
-  maxCompressionRatio: number;
-}
-
-export const DEFAULT_LIMITS: ReadLimits = {
-  maxEntries: 10_000,
-  maxTotalUncompressed: 512 * 1024 * 1024, // 512 MiB
-  maxEntryUncompressed: 256 * 1024 * 1024, // 256 MiB
-  maxCompressionRatio: 1000,
-};
 
 export interface ZipArchive {
   /** Entries in their original archive order. */
@@ -35,106 +36,38 @@ export interface ZipArchive {
   byName: Map<string, ZipEntry>;
   /** The original bytes, kept for zero-change pass-through writes. */
   raw: Uint8Array;
-}
-
-const UNSAFE = /(^\/)|(^[a-zA-Z]:)|(^|\/)\.\.(\/|$)|(\0)/;
-
-function normalizeName(name: string): string {
-  return name.replace(/\\/g, '/');
-}
-
-export function isSafeEntryName(name: string): boolean {
-  if (name.length === 0) return false;
-  const normalized = normalizeName(name);
-  if (normalized.endsWith('/')) return false; // directory markers, not needed
-  return !UNSAFE.test(normalized);
-}
-
-function toUint8(input: Uint8Array | ArrayBuffer | ArrayBufferView): Uint8Array {
-  if (input instanceof Uint8Array) return input;
-  if (ArrayBuffer.isView(input)) {
-    return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  }
-  return new Uint8Array(input);
+  /** Names explicitly marked as changed (dirty); these are re-compressed. */
+  dirtyNames?: ReadonlySet<string>;
+  /** Bytes before the first local header, preserved on write. */
+  prefixBytes?: Uint8Array;
+  /** EOCD comment, preserved on write. */
+  commentBytes?: Uint8Array;
 }
 
 /**
  * Read a ZIP (OPC package) into memory with defense-in-depth limits.
- * Rejects path traversal, excessive entry counts and decompression bombs.
+ * Rejects path traversal, excessive entry counts and decompression bombs —
+ * all enforced on the ZIP structure before/while inflating (see `zip/raw.ts`).
  */
 export function readZip(
   input: Uint8Array | ArrayBuffer | ArrayBufferView,
   limits: Partial<ReadLimits> = {},
 ): ZipArchive {
-  const raw = toUint8(input);
-  const lim: ReadLimits = { ...DEFAULT_LIMITS, ...limits };
+  const parsed = parseRawZip(input, limits);
 
-  const rejected: string[] = [];
-  let rawMap: Record<string, Uint8Array>;
-  try {
-    rawMap = unzipSync(raw, {
-      filter: (file) => {
-        if (file.name.endsWith('/')) return false;
-        if (!isSafeEntryName(file.name)) {
-          rejected.push(file.name);
-          return false;
-        }
-        // Reject oversized entries BEFORE inflating them (anti zip-bomb).
-        if (file.originalSize > lim.maxEntryUncompressed) {
-          rejected.push(file.name);
-          return false;
-        }
-        return true;
-      },
-    });
-  } catch (error) {
-    throw new ZipSecurityError(`Unable to read ZIP archive: ${(error as Error).message}`);
-  }
-  if (rejected.length > 0) {
-    throw new ZipSecurityError(`Unsafe entry rejected: ${JSON.stringify(rejected[0])}`);
-  }
+  const entries: ZipEntry[] = parsed.entries.map((entry) => ({
+    name: entry.name,
+    data: entry.data,
+    source: entry.source,
+  }));
 
-  const names = Object.keys(rawMap);
-  if (names.length > lim.maxEntries) {
-    throw new ZipSecurityError(
-      `Archive has too many entries (${names.length} > ${lim.maxEntries})`,
-    );
-  }
-
-  const entries: ZipEntry[] = [];
-  const byName = new Map<string, ZipEntry>();
-  let total = 0;
-
-  for (const originalName of names) {
-    if (!isSafeEntryName(originalName)) {
-      throw new ZipSecurityError(`Unsafe entry name rejected: ${JSON.stringify(originalName)}`);
-    }
-    const name = normalizeName(originalName);
-    const data = rawMap[originalName]!;
-    if (data.length > lim.maxEntryUncompressed) {
-      throw new ZipSecurityError(
-        `Entry exceeds size limit (${name}: ${data.length} > ${lim.maxEntryUncompressed})`,
-      );
-    }
-    total += data.length;
-    if (total > lim.maxTotalUncompressed) {
-      throw new ZipSecurityError(
-        `Total decompressed size exceeds limit (${total} > ${lim.maxTotalUncompressed})`,
-      );
-    }
-    const entry: ZipEntry = { name, data };
-    entries.push(entry);
-    byName.set(name, entry);
-  }
-
-  // Whole-archive decompression-bomb guard.
-  if (raw.length > 0 && total / raw.length > lim.maxCompressionRatio) {
-    throw new ZipSecurityError(
-      `Suspicious compression ratio (${Math.round(total / raw.length)}x > ${lim.maxCompressionRatio}x)`,
-    );
-  }
-
-  return { entries, byName, raw };
+  return {
+    entries,
+    byName: new Map(entries.map((entry) => [entry.name, entry])),
+    raw: parsed.raw,
+    prefixBytes: parsed.prefix,
+    commentBytes: parsed.comment,
+  };
 }
 
 export interface WriteOptions {
@@ -144,16 +77,22 @@ export interface WriteOptions {
 
 /**
  * Serialize archive entries back into a ZIP. Entry order is preserved.
- * (v0.2 will reuse untouched entries' raw deflate stream to be faster and
- * to guarantee whole-file byte identity.)
+ * Untouched entries are copied byte-for-byte (original compressed bytes +
+ * CRC + headers); only changed or new entries are re-compressed.
  */
 export function writeZip(archive: ZipArchive, options: WriteOptions = {}): Uint8Array {
-  const level = options.level ?? 6;
-  const zippable: Zippable = {};
-  for (const entry of archive.entries) {
-    const entryOptions: ZipOptions = { level };
-    if (entry.mtime) entryOptions.mtime = entry.mtime;
-    zippable[entry.name] = [entry.data, entryOptions];
-  }
-  return zipSync(zippable, { level });
+  const dirty = archive.dirtyNames;
+  const entries: RawWriteEntry[] = archive.entries.map((entry) => {
+    const source = entry.source;
+    if (source && entry.data === source.data && !(dirty && dirty.has(entry.name))) {
+      // Untouched: reuse the original compressed bytes + CRC verbatim.
+      return { name: entry.name, data: source.data, source };
+    }
+    return { name: entry.name, data: entry.data, mtime: entry.mtime };
+  });
+  return serializeRawZip(entries, {
+    level: options.level ?? 6,
+    prefix: archive.prefixBytes,
+    comment: archive.commentBytes,
+  });
 }

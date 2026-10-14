@@ -1,4 +1,4 @@
-import { parseXml, child, childrenOf, type XmlNode } from '../xml/xml';
+import { parseXml, child, childrenOf, escapeXml, type XmlNode } from '../xml/xml';
 import { SheetLiteError } from '../zip/errors';
 import type { CellStyleOverrides, FillProps, FontProps } from '../model/style';
 
@@ -41,9 +41,26 @@ function slice(xml: string, node: XmlNode): string {
   return xml.slice(node.start, node.end);
 }
 
-function setCount(tag: string, count: number): string {
-  if (/\bcount="\d+"/.test(tag)) return tag.replace(/\bcount="\d+"/, `count="${count}"`);
-  return tag.replace(/>$/, ` count="${count}">`);
+interface Edit {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * Build an edit that updates (or inserts) the `count` attribute of a container's
+ * opening tag. The edit targets ONLY the attribute range, never the whole tag,
+ * so it can never collide with another edit anchored at the tag's start
+ * (e.g. inserting a `<numFmts>` container before `<fonts>`).
+ */
+function countEdit(xml: string, node: XmlNode, count: number): Edit {
+  const open = xml.slice(node.start, node.openEnd);
+  const match = /\bcount="\d+"/.exec(open);
+  if (match) {
+    const start = node.start + match.index;
+    return { start, end: start + match[0]!.length, text: `count="${count}"` };
+  }
+  return { start: node.openEnd - 1, end: node.openEnd, text: ` count="${count}">` };
 }
 
 /**
@@ -189,43 +206,41 @@ export class StyleRegistry {
   toXml(): string {
     if (!this.changed) return this.xml;
 
-    const edits: { start: number; end: number; text: string }[] = [];
+    const edits: Edit[] = [];
 
     // New number formats (create the container if missing).
     if (this.addedNumFmts.length > 0) {
-      const entries = this.addedNumFmts.map((nf) => `<numFmt numFmtId="${nf.id}" formatCode="${nf.code}"/>`).join('');
+      const entries = this.addedNumFmts
+        .map((nf) => `<numFmt numFmtId="${nf.id}" formatCode="${escapeXml(nf.code)}"/>`)
+        .join('');
       if (this.numFmtsNode) {
-        const count = this.numFmtById.size + this.addedNumFmts.length;
-        const open = setCount(this.xml.slice(this.numFmtsNode.start, this.numFmtsNode.openEnd), count);
-        edits.push({ start: this.numFmtsNode.start, end: this.numFmtsNode.openEnd, text: open });
+        // numFmtById already contains the added formats.
+        edits.push(countEdit(this.xml, this.numFmtsNode, this.numFmtById.size));
         edits.push({ start: this.numFmtsNode.closeStart, end: this.numFmtsNode.closeStart, text: entries });
       } else {
+        // Inserted before <fonts>. The fonts count edit below targets ONLY its
+        // count attribute, so these two edits can never collide.
         edits.push({
           start: this.fontsNode.start,
           end: this.fontsNode.start,
-          text: `<numFmts count="${this.addedNumFmts.length}">${entries}</numFmts>`,
+          text: `<numFmts count="${this.numFmtById.size}">${entries}</numFmts>`,
         });
       }
     }
 
     if (this.addedFonts.length > 0) {
-      const count = this.fontRaws.length + this.addedFonts.length;
-      const open = setCount(this.xml.slice(this.fontsNode.start, this.fontsNode.openEnd), count);
-      edits.push({ start: this.fontsNode.start, end: this.fontsNode.openEnd, text: open });
+      // fontRaws already contains the added fonts.
+      edits.push(countEdit(this.xml, this.fontsNode, this.fontRaws.length));
       edits.push({ start: this.fontsNode.closeStart, end: this.fontsNode.closeStart, text: this.addedFonts.join('') });
     }
 
     if (this.addedFills.length > 0) {
-      const count = this.fillRaws.length + this.addedFills.length;
-      const open = setCount(this.xml.slice(this.fillsNode.start, this.fillsNode.openEnd), count);
-      edits.push({ start: this.fillsNode.start, end: this.fillsNode.openEnd, text: open });
+      edits.push(countEdit(this.xml, this.fillsNode, this.fillRaws.length));
       edits.push({ start: this.fillsNode.closeStart, end: this.fillsNode.closeStart, text: this.addedFills.join('') });
     }
 
     if (this.addedXfs.length > 0) {
-      const count = this.xfDescs.length;
-      const open = setCount(this.xml.slice(this.cellXfsNode.start, this.cellXfsNode.openEnd), count);
-      edits.push({ start: this.cellXfsNode.start, end: this.cellXfsNode.openEnd, text: open });
+      edits.push(countEdit(this.xml, this.cellXfsNode, this.xfDescs.length));
       edits.push({
         start: this.cellXfsNode.closeStart,
         end: this.cellXfsNode.closeStart,

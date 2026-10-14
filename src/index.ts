@@ -11,8 +11,10 @@ export {
   type ZipEntry,
   type ReadLimits,
   type WriteOptions,
+  type RawEntrySource,
 } from './zip/archive';
-export { SheetLiteError, ZipSecurityError } from './zip/errors';
+export { SheetLiteError, ZipSecurityError, ZipUnsupportedError } from './zip/errors';
+export { crc32 } from './zip/raw';
 export { parseContentTypes, contentTypeOf, type ContentTypes } from './opc/content-types';
 export { resolvePartPath } from './opc/relationships';
 export { ValueType, typeOf, type CellValue, type ValueTypeName } from './model/value';

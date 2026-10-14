@@ -21,3 +21,14 @@ export class ZipSecurityError extends SheetLiteError {
     this.name = 'ZipSecurityError';
   }
 }
+
+/**
+ * Thrown when an archive uses a ZIP feature sheet-lite deliberately does not
+ * support (zip64, data descriptors, encryption, multi-disk archives, ...).
+ */
+export class ZipUnsupportedError extends SheetLiteError {
+  constructor(message: string) {
+    super(message, 'ZIP_UNSUPPORTED');
+    this.name = 'ZipUnsupportedError';
+  }
+}

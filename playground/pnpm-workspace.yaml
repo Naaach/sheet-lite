@@ -1,0 +1,4 @@
+# Playground-local pnpm settings (independent package; root is untouched).
+# esbuild's postinstall is required so Vite's bundled esbuild binary resolves.
+allowBuilds:
+  esbuild: true

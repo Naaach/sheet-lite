@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>sheet-lite · playground</title>
+    <meta name="description" content="Interactive playground for sheet-lite: open, edit and re-serialize .xlsx files entirely in your browser." />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='6' fill='%232563eb'/%3E%3Cpath d='M9 11h14M9 16h14M9 21h9' stroke='%23fff' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+            <rect x="2" y="2" width="28" height="28" rx="7" fill="var(--accent)" />
+            <path d="M9 11h14M9 16h14M9 21h9" stroke="#fff" stroke-width="2.4" stroke-linecap="round" />
+          </svg>
+          <span class="brand-name">sheet-lite</span>
+          <span class="brand-tag">playground</span>
+        </div>
+        <div class="topbar-right">
+          <span class="chip chip-file" id="fileChip" hidden></span>
+          <span class="chip chip-dirty" id="dirtyChip" hidden>&#9679; unsaved edits</span>
+          <button class="btn" id="btnOpen" type="button">Open .xlsx</button>
+          <input type="file" id="fileInput" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden />
+          <button class="btn" id="btnSample" type="button" title="Build a workbook in-browser with the library itself: values, a date, formulas, number formats and merges">Generate sample</button>
+          <button class="btn btn-ghost" id="btnUnsafe" type="button" title="Loads a deliberately unsafe package so you can see error handling in action">Unsafe demo</button>
+          <button class="btn btn-primary" id="btnDownload" type="button" disabled>Download edited .xlsx</button>
+        </div>
+      </header>
+
+      <div class="errorbar" id="errorBar" hidden role="alert">
+        <div class="error-body">
+          <div class="error-title">
+            <span id="errorName">Error</span>
+            <span class="code-chip" id="errorCode" hidden></span>
+          </div>
+          <p class="error-message" id="errorMessage"></p>
+        </div>
+        <button class="error-close" id="errorClose" type="button" aria-label="Dismiss error">&#215;</button>
+      </div>
+
+      <main class="main">
+        <section class="gridwrap">
+          <nav class="tabs" id="tabs" aria-label="Sheets"></nav>
+          <div class="grid-notice" id="gridNotice" hidden>
+            <span id="noticeText"></span>
+            <button class="btn btn-mini" id="btnMoreRows" type="button">Show 500 more rows</button>
+          </div>
+          <div class="gridscroll" id="gridScroll" tabindex="0" aria-label="Spreadsheet grid"></div>
+          <footer class="statusline" id="statusLine"></footer>
+        </section>
+
+        <aside class="sidebar">
+          <section class="panel">
+            <h2>Inspector</h2>
+            <dl class="inspector">
+              <dt>Cell</dt>
+              <dd><span class="ref-chip" id="inspRef">—</span></dd>
+              <dt>Value</dt>
+              <dd class="mono wrap" id="inspValue">—</dd>
+              <dt>Type</dt>
+              <dd id="inspType">—</dd>
+              <dt>Number format</dt>
+              <dd class="mono" id="inspNumFmt">—</dd>
+              <dt>Font</dt>
+              <dd id="inspFont">—</dd>
+              <dt>Fill</dt>
+              <dd id="inspFill">—</dd>
+            </dl>
+          </section>
+
+          <section class="panel">
+            <h2>Cell actions</h2>
+            <p class="hint">Applied to the selected cell on <span id="actionSheet" class="mono">—</span></p>
+            <div class="actions">
+              <button class="btn" id="btnBold" type="button">Set bold</button>
+              <button class="btn btn-wide" id="btnNumFmt" type="button" title="cell.numFmt = '#,##0.00'">Set number format #,##0.00</button>
+              <button class="btn btn-wide" id="btnAddRow" type="button" title="sheet.addRow([...]) — appends values, a formula and a date via the public API">Add row</button>
+              <button class="btn" id="btnMerge" type="button">Merge A1:B1</button>
+              <button class="btn" id="btnUnmerge" type="button" disabled>Unmerge A1:B1</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Patch monitor</h2>
+            <div class="sizes">
+              <div class="size-box">
+                <span class="size-label">Original</span>
+                <span class="size-value mono" id="sizeOriginal">—</span>
+              </div>
+              <div class="size-box">
+                <span class="size-label">Output</span>
+                <span class="size-value mono" id="sizeOutput">—</span>
+              </div>
+              <span class="chip chip-delta" id="sizeDelta" hidden></span>
+            </div>
+            <p class="parts-summary" id="partsSummary">Open a file to inspect its OPC parts.</p>
+            <ul class="parts-list mono" id="partsList"></ul>
+            <p class="footnote">
+              Parts are compared byte-for-byte via <code>Workbook.parts()</code> before and after
+              <code>toBuffer()</code>. Untouched parts are carried over verbatim — only dirty
+              sheets (and styles, if new formats were added) are re-serialized.
+            </p>
+          </section>
+        </aside>
+
+        <div class="empty" id="emptyState">
+          <div class="empty-card">
+            <svg class="empty-mark" viewBox="0 0 48 48" aria-hidden="true">
+              <rect x="4" y="4" width="40" height="40" rx="10" fill="var(--accent)" opacity="0.14" />
+              <rect x="4" y="4" width="40" height="40" rx="10" fill="none" stroke="var(--accent)" stroke-width="2" />
+              <path d="M12 17h24M12 25h24M12 33h14" stroke="var(--accent)" stroke-width="2.6" stroke-linecap="round" />
+            </svg>
+            <h1>Open an .xlsx and edit it live</h1>
+            <p class="empty-sub">
+              sheet-lite reads your workbook, applies your edits surgically and re-serializes
+              only what changed. Everything runs locally — your file never leaves this page.
+            </p>
+            <div class="empty-actions">
+              <button class="btn btn-primary btn-lg" id="btnPickEmpty" type="button">Choose file</button>
+              <button class="btn btn-lg" id="btnSampleEmpty" type="button">Generate sample</button>
+            </div>
+            <p class="empty-hint">
+              or drop a file anywhere on this page ·
+              <button class="linklike" id="btnUnsafeEmpty" type="button">try the unsafe-file demo</button>
+            </p>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="dropOverlay" hidden aria-hidden="true"><span>Drop to open</span></div>
+  </body>
+</html>
