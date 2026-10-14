@@ -22,12 +22,20 @@ export interface RowRecord {
   end: number;
 }
 
+export interface MergeChild {
+  ref: string;
+  start: number;
+  end: number;
+}
+
 export interface ParsedSheet {
   xml: string;
   cells: Map<string, CellRecord>;
   rows: Map<number, RowRecord>;
   /** Index of the `</sheetData>` close tag in the original XML. */
   sheetDataClose: number;
+  mergeCells: { start: number; openEnd: number; closeStart: number; end: number } | null;
+  mergeChildren: MergeChild[];
   maxRow: number;
   maxCol: number;
 }
@@ -85,9 +93,7 @@ function computeValue(c: XmlNode, meta: PackageMeta): CellValue {
       : numeric;
   }
 
-  if (fNode) {
-    return { formula: textOf(fNode), result: value ?? undefined };
-  }
+  if (fNode) return { formula: textOf(fNode), result: value ?? undefined };
   return value;
 }
 
@@ -106,12 +112,7 @@ export function parseSheet(xml: string, meta: PackageMeta): ParsedSheet {
     for (const rowNode of childrenOf(sheetData, 'row')) {
       implicitRow += 1;
       const r = rowNode.attrs.r ? Number(rowNode.attrs.r) : implicitRow;
-      rows.set(r, {
-        r,
-        start: rowNode.start,
-        closeStart: rowNode.closeStart,
-        end: rowNode.end,
-      });
+      rows.set(r, { r, start: rowNode.start, closeStart: rowNode.closeStart, end: rowNode.end });
       if (r > maxRow) maxRow = r;
 
       for (const c of childrenOf(rowNode, 'c')) {
@@ -135,12 +136,29 @@ export function parseSheet(xml: string, meta: PackageMeta): ParsedSheet {
     }
   }
 
+  const mergeCellsNode = child(worksheet, 'mergeCells') ?? null;
+  const mergeChildren: MergeChild[] = [];
+  if (mergeCellsNode) {
+    for (const merge of childrenOf(mergeCellsNode, 'mergeCell')) {
+      mergeChildren.push({ ref: merge.attrs.ref ?? '', start: merge.start, end: merge.end });
+    }
+  }
+
   const closeIdx = xml.lastIndexOf('</sheetData>');
   return {
     xml,
     cells,
     rows,
     sheetDataClose: closeIdx === -1 ? xml.lastIndexOf('</worksheet>') : closeIdx,
+    mergeCells: mergeCellsNode
+      ? {
+          start: mergeCellsNode.start,
+          openEnd: mergeCellsNode.openEnd,
+          closeStart: mergeCellsNode.closeStart,
+          end: mergeCellsNode.end,
+        }
+      : null,
+    mergeChildren,
     maxRow,
     maxCol,
   };

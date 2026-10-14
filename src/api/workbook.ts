@@ -3,6 +3,7 @@ import { PartStore } from '../opc/part-store';
 import { readZip, writeZip } from '../zip/archive';
 import { parseContentTypes, type ContentTypes } from '../opc/content-types';
 import { readPackageMeta, type PackageMeta } from '../reader/package-reader';
+import { StyleRegistry } from '../writer/style-registry';
 import { Worksheet } from './worksheet';
 
 function toUint8(input: Uint8Array | ArrayBuffer | ArrayBufferView): Uint8Array {
@@ -22,30 +23,30 @@ const toPartKey = (partName: string): string => partName.replace(/^\//, '');
 export class Workbook {
   private readonly store: PartStore;
   private readonly meta: PackageMeta;
+  private readonly styleRegistry: StyleRegistry | null;
   private readonly worksheetList: Worksheet[];
 
   private constructor(store: PartStore) {
     this.store = store;
     this.meta = readPackageMeta(store);
+    const stylesData = store.get('xl/styles.xml');
+    this.styleRegistry = stylesData ? new StyleRegistry(strFromU8(stylesData)) : null;
     this.worksheetList = this.meta.sheets.map((sheet) => {
       const key = toPartKey(sheet.partName);
       const xml = strFromU8(store.get(key)!);
-      return new Worksheet(sheet.name, Number(sheet.sheetId), key, xml, this.meta);
+      return new Worksheet(sheet.name, Number(sheet.sheetId), key, xml, this.meta, this.styleRegistry);
     });
   }
 
-  /** Read a workbook from a filesystem path (Node only). */
   static async readFile(path: string): Promise<Workbook> {
     const { readFile } = await import('node:fs/promises');
     return Workbook.read(await readFile(path));
   }
 
-  /** Read a workbook from raw bytes (Node, browsers and edge runtimes). */
   static read(input: Uint8Array | ArrayBuffer | ArrayBufferView): Workbook {
     return new Workbook(new PartStore(readZip(toUint8(input))));
   }
 
-  /** Write to a filesystem path (Node only). */
   async writeFile(path: string): Promise<void> {
     const { writeFile } = await import('node:fs/promises');
     await writeFile(path, this.toBuffer());
@@ -70,7 +71,6 @@ export class Workbook {
     return this.worksheetList.find((sheet) => sheet.name === nameOrId);
   }
 
-  /** Read-only metadata parsed from the package (date system, shared strings, …). */
   get metadata(): PackageMeta {
     return this.meta;
   }
@@ -87,17 +87,16 @@ export class Workbook {
    */
   toBuffer(): Uint8Array {
     const dirtySheets = this.worksheetList.filter((sheet) => sheet.isDirty());
-    const hasLowLevelEdits = this.store.dirtyNames().some((name) => name !== '[Content_Types].xml');
     if (dirtySheets.length === 0 && !this.store.isDirty()) {
       return this.store.raw;
     }
 
     const store = this.store.clone();
     for (const sheet of dirtySheets) {
-      store.set(sheet.partName, strToU8(sheet.serialize()));
+      store.set(sheet.partName, strToU8(sheet.serialize(this.styleRegistry)));
     }
-    if (!hasLowLevelEdits && dirtySheets.length === 0) {
-      return this.store.raw;
+    if (this.styleRegistry?.changed) {
+      store.set('xl/styles.xml', strToU8(this.styleRegistry.toXml()));
     }
     return writeZip(store.toArchive());
   }

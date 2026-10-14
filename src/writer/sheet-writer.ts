@@ -1,40 +1,37 @@
 import { dateToSerial } from '../model/dates';
 import { escapeXml } from '../xml/xml';
 import type { CellValue } from '../model/value';
+import type { CellStyleOverrides } from '../model/style';
 import { refToCoords, type ParsedSheet } from '../reader/sheet-parser';
+import type { StyleRegistry } from './style-registry';
+
+export interface CellEdit {
+  hasValue: boolean;
+  value: CellValue;
+  style?: CellStyleOverrides;
+}
 
 /** Serialize a single cell into OOXML `<c>` markup. `''` removes the cell. */
 export function generateCellXml(
   ref: string,
   value: CellValue,
-  styleIndex: number | undefined,
+  styleIndex: number,
   date1904: boolean,
 ): string {
   if (value === null || value === undefined) return '';
   const sAttr = styleIndex ? ` s="${styleIndex}"` : '';
 
-  if (typeof value === 'number') {
-    return `<c r="${ref}"${sAttr}><v>${value}</v></c>`;
-  }
-  if (typeof value === 'boolean') {
-    return `<c r="${ref}" t="b"${sAttr}><v>${value ? 1 : 0}</v></c>`;
-  }
-  if (value instanceof Date) {
-    return `<c r="${ref}"${sAttr}><v>${dateToSerial(value, date1904)}</v></c>`;
-  }
+  if (typeof value === 'number') return `<c r="${ref}"${sAttr}><v>${value}</v></c>`;
+  if (typeof value === 'boolean') return `<c r="${ref}" t="b"${sAttr}><v>${value ? 1 : 0}</v></c>`;
+  if (value instanceof Date) return `<c r="${ref}"${sAttr}><v>${dateToSerial(value, date1904)}</v></c>`;
   if (typeof value === 'object' && 'error' in value) {
     return `<c r="${ref}" t="e"${sAttr}><v>${escapeXml(value.error)}</v></c>`;
   }
   if (typeof value === 'object' && 'formula' in value) {
     const { result } = value;
     let resultText = '';
-    if (result instanceof Date) {
-      resultText = String(dateToSerial(result, date1904));
-    } else if (
-      typeof result === 'number' ||
-      typeof result === 'string' ||
-      typeof result === 'boolean'
-    ) {
+    if (result instanceof Date) resultText = String(dateToSerial(result, date1904));
+    else if (typeof result === 'number' || typeof result === 'string' || typeof result === 'boolean') {
       resultText = String(result);
     }
     return `<c r="${ref}"${sAttr}><f>${escapeXml(value.formula)}</f><v>${escapeXml(resultText)}</v></c>`;
@@ -52,32 +49,40 @@ interface Op {
 }
 
 /**
- * Patch a worksheet: only the changed cells are rewritten; every untouched byte
- * of the original XML (styles, validations, drawings, conditional formatting, …)
- * stays exactly as it was.
+ * Patch a worksheet: only the changed cells/merges are rewritten; every
+ * untouched byte of the original XML stays exactly as it was.
  */
 export function serializeSheet(
   sheet: ParsedSheet,
-  changes: Map<string, CellValue>,
+  changes: Map<string, CellEdit>,
   date1904: boolean,
+  registry: StyleRegistry | null,
+  newMerges: string[],
+  removedMerges: string[],
 ): string {
   const ops: Op[] = [];
   const insertsByPos = new Map<number, { col: number; xml: string }[]>();
   const newRows = new Map<number, { col: number; xml: string }[]>();
 
-  for (const [ref, value] of changes) {
+  for (const [ref, edit] of changes) {
     const existing = sheet.cells.get(ref);
-    if (existing) {
-      ops.push({
-        pos: existing.start,
-        end: existing.end,
-        text: generateCellXml(ref, value, existing.styleIndex, date1904),
-      });
-      continue;
+    const baseIndex = existing ? existing.styleIndex : 0;
+    const styleIndex =
+      edit.style && registry ? registry.resolveIndex(baseIndex, edit.style) : baseIndex;
+    const value = edit.hasValue ? edit.value : existing ? existing.value : null;
+    let xml: string;
+    if ((value === null || value === undefined) && edit.style && styleIndex) {
+      // An empty cell that only carries styling still needs to exist.
+      xml = `<c r="${ref}" s="${styleIndex}"/>`;
+    } else {
+      xml = generateCellXml(ref, value, styleIndex, date1904);
     }
 
+    if (existing) {
+      ops.push({ pos: existing.start, end: existing.end, text: xml });
+      continue;
+    }
     const { row, col } = refToCoords(ref);
-    const xml = generateCellXml(ref, value, undefined, date1904);
     const rowRec = sheet.rows.get(row);
     if (rowRec) {
       const list = insertsByPos.get(rowRec.closeStart) ?? [];
@@ -105,10 +110,44 @@ export function serializeSheet(
     ops.push({ pos: sheet.sheetDataClose, end: sheet.sheetDataClose, text: newRowXml.join('') });
   }
 
+  applyMergeEdits(sheet, newMerges, removedMerges, ops);
+
   ops.sort((a, b) => b.pos - a.pos);
   let out = sheet.xml;
-  for (const op of ops) {
-    out = out.slice(0, op.pos) + op.text + out.slice(op.end);
-  }
+  for (const op of ops) out = out.slice(0, op.pos) + op.text + out.slice(op.end);
   return out;
+}
+
+function applyMergeEdits(sheet: ParsedSheet, newMerges: string[], removedMerges: string[], ops: Op[]): void {
+  const container = sheet.mergeCells;
+  let present = sheet.mergeChildren;
+
+  if (removedMerges.length > 0) {
+    const removedSet = new Set(removedMerges);
+    for (const child of present) {
+      if (removedSet.has(child.ref)) {
+        ops.push({ pos: child.start, end: child.end, text: '' });
+      }
+    }
+    present = present.filter((child) => !removedSet.has(child.ref));
+  }
+
+  if (newMerges.length === 0) return;
+  const additions = newMerges.map((ref) => `<mergeCell ref="${ref}"/>`).join('');
+
+  if (container) {
+    const count = present.length + newMerges.length;
+    const open = sheet.xml.slice(container.start, container.openEnd);
+    const updated = /\bcount="\d+"/.test(open)
+      ? open.replace(/\bcount="\d+"/, `count="${count}"`)
+      : open.replace(/>$/, ` count="${count}">`);
+    ops.push({ pos: container.start, end: container.openEnd, text: updated });
+    ops.push({ pos: container.closeStart, end: container.closeStart, text: additions });
+  } else {
+    ops.push({
+      pos: sheet.sheetDataClose,
+      end: sheet.sheetDataClose,
+      text: `<mergeCells count="${newMerges.length}">${additions}</mergeCells>`,
+    });
+  }
 }

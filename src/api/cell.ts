@@ -1,4 +1,5 @@
 import { typeOf, type CellValue, type ValueTypeName } from '../model/value';
+import type { FillProps, FontProps } from '../model/style';
 import { refToCoords } from '../reader/sheet-parser';
 import type { Worksheet } from './worksheet';
 
@@ -32,8 +33,28 @@ export class Cell {
     return typeOf(this.value);
   }
 
-  get model(): { address: string; type: ValueTypeName; value: CellValue } {
-    return { address: this.ref, type: this.type, value: this.value };
+  get numFmt(): string {
+    return this.worksheet.getCellNumFmt(this.ref);
+  }
+
+  set numFmt(value: string) {
+    this.worksheet.setCellStyle(this.ref, { numFmt: value });
+  }
+
+  get font(): FontProps {
+    return this.worksheet.getCellFont(this.ref);
+  }
+
+  set font(value: FontProps) {
+    this.worksheet.setCellStyle(this.ref, { font: value });
+  }
+
+  get fill(): FillProps | undefined {
+    return this.worksheet.getCellFill(this.ref);
+  }
+
+  set fill(value: FillProps) {
+    this.worksheet.setCellStyle(this.ref, { fill: value });
   }
 
   toString(): string {

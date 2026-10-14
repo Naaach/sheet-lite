@@ -16,6 +16,7 @@ export { SheetLiteError, ZipSecurityError } from './zip/errors';
 export { parseContentTypes, contentTypeOf, type ContentTypes } from './opc/content-types';
 export { resolvePartPath } from './opc/relationships';
 export { ValueType, typeOf, type CellValue, type ValueTypeName } from './model/value';
+export type { FontProps, FillProps, CellStyleOverrides } from './model/style';
 export { serialToDate, dateToSerial, isDateFormatCode } from './model/dates';
 export type { PackageMeta, SheetRef } from './reader/package-reader';
 export { refToCoords, coordsToRef, columnToNumber, numberToColumn } from './reader/sheet-parser';

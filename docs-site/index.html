@@ -1,0 +1,858 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sheet-lite — read &amp; edit .xlsx without breaking your file</title>
+    <meta
+      name="description"
+      content="sheet-lite reads, writes and edits Excel (.xlsx) files without breaking them. Zero transitive dependencies, ESM + CJS, works on raw bytes in Node, browsers and edge runtimes."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script>
+      // Set the theme before paint to avoid a flash of the wrong theme.
+      (function () {
+        try {
+          var stored = localStorage.getItem("sheet-lite:theme");
+          var prefersDark =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var theme = stored || (prefersDark ? "dark" : "light");
+          document.documentElement.setAttribute("data-theme", theme);
+        } catch (e) {
+          /* no-op */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#overview">Skip to content</a>
+
+    <header class="topbar">
+      <div class="topbar__inner">
+        <button
+          class="topbar__menu"
+          id="menu-toggle"
+          aria-label="Toggle navigation"
+          aria-expanded="false"
+          aria-controls="sidebar"
+        >
+          <span class="topbar__menu-bars" aria-hidden="true"></span>
+        </button>
+
+        <a class="brand" href="#overview">
+          <span class="brand__mark" aria-hidden="true">SL</span>
+          <span class="brand__name">sheet-lite</span>
+        </a>
+
+        <span class="topbar__tag">read &amp; edit .xlsx without breaking it</span>
+
+        <button
+          class="theme-toggle"
+          id="theme-toggle"
+          aria-label="Toggle color theme"
+          title="Toggle color theme"
+        >
+          <svg
+            class="theme-toggle__icon theme-toggle__icon--sun"
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="4.2" />
+            <g stroke-linecap="round">
+              <line x1="12" y1="2.5" x2="12" y2="5" />
+              <line x1="12" y1="19" x2="12" y2="21.5" />
+              <line x1="2.5" y1="12" x2="5" y2="12" />
+              <line x1="19" y1="12" x2="21.5" y2="12" />
+              <line x1="5.3" y1="5.3" x2="7" y2="7" />
+              <line x1="17" y1="17" x2="18.7" y2="18.7" />
+              <line x1="18.7" y1="5.3" x2="17" y2="7" />
+              <line x1="7" y1="17" x2="5.3" y2="18.7" />
+            </g>
+          </svg>
+          <svg
+            class="theme-toggle__icon theme-toggle__icon--moon"
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            aria-hidden="true"
+          >
+            <path
+              d="M20 14.5A8 8 0 0 1 9.5 4a0.6 0.6 0 0 0-0.8-0.8A8.6 8.6 0 1 0 20.8 15.3a0.6 0.6 0 0 0-0.8-0.8z"
+            />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar" id="sidebar" aria-label="Documentation navigation">
+        <nav class="nav">
+          <p class="nav__group-title">Getting started</p>
+          <ul class="nav__list">
+            <li><a class="nav__link" href="#overview">Overview</a></li>
+            <li><a class="nav__link" href="#why">Why sheet-lite</a></li>
+            <li><a class="nav__link" href="#install">Install</a></li>
+            <li><a class="nav__link" href="#quickstart">Quickstart</a></li>
+          </ul>
+
+          <p class="nav__group-title">API reference</p>
+          <ul class="nav__list">
+            <li><a class="nav__link" href="#api">Overview</a></li>
+            <li><a class="nav__link" href="#api-workbook">Workbook</a></li>
+            <li><a class="nav__link" href="#api-worksheet">Worksheet</a></li>
+            <li><a class="nav__link" href="#api-cell">Cell</a></li>
+            <li><a class="nav__link" href="#api-valuetype">Value types</a></li>
+            <li><a class="nav__link" href="#api-errors">Errors</a></li>
+          </ul>
+
+          <p class="nav__group-title">Examples</p>
+          <ul class="nav__list">
+            <li><a class="nav__link" href="#ex-read">Read values</a></li>
+            <li><a class="nav__link" href="#ex-edit">Edit &amp; preserve</a></li>
+            <li><a class="nav__link" href="#ex-add-rows">Add rows</a></li>
+            <li><a class="nav__link" href="#ex-dates">Dates</a></li>
+            <li><a class="nav__link" href="#ex-formulas">Formulas</a></li>
+          </ul>
+        </nav>
+      </aside>
+
+      <main class="content" id="content">
+        <!-- ============================ HERO ============================ -->
+        <section class="hero" id="overview">
+          <p class="eyebrow">TypeScript · ESM + CJS · zero transitive dependencies</p>
+          <h1 class="hero__title">
+            Read, write and <em>edit</em> Excel.<br />
+            Without breaking your file.
+          </h1>
+          <p class="hero__lead">
+            When you open an <code>.xlsx</code>, change a value and save, most libraries
+            rebuild the whole package and silently drop formatting, data validations,
+            conditional formatting or images. <strong>sheet-lite</strong> patches only
+            what changed and carries everything else over untouched.
+          </p>
+
+          <div class="hero__actions">
+            <a class="btn btn--primary" href="#quickstart">Quickstart</a>
+            <a class="btn btn--ghost" href="#api">API reference</a>
+          </div>
+
+          <ul class="hero__facts">
+            <li><strong>~120 ms</strong> to read a 5000 × 8 sheet</li>
+            <li><strong>~20.3 kB</strong> gzip, including deps</li>
+            <li><strong>0</strong> transitive dependencies</li>
+            <li><strong>fflate</strong> is the only dependency</li>
+          </ul>
+
+          <div class="callout">
+            <p>
+              The public promise is <strong>“opens without repair.”</strong> Untouched
+              parts of the file are preserved; when nothing changes, the original bytes
+              are returned verbatim.
+            </p>
+          </div>
+        </section>
+
+        <!-- ============================ WHY ============================ -->
+        <section class="section" id="why">
+          <h2>Why sheet-lite</h2>
+          <p class="section__lead">
+            The most-downloaded library in this space can destroy your data when you
+            read and re-write an existing workbook. sheet-lite is built around a single
+            principle: <strong>patch-only + copy-verbatim</strong>.
+          </p>
+
+          <div class="grid grid--2">
+            <article class="card">
+              <h3>The preservation promise</h3>
+              <ul class="check-list">
+                <li>Only the cells that actually changed are rewritten.</li>
+                <li>Data validations, conditional formatting, merges and images stay intact.</li>
+                <li>Styles and number formats are carried over per cell.</li>
+                <li>A no-op edit returns the original bytes exactly.</li>
+                <li>Security by design: path-traversal, entry-count, size and compression-ratio limits.</li>
+              </ul>
+            </article>
+
+            <article class="card">
+              <h3>Lightweight by construction</h3>
+              <ul class="check-list">
+                <li>Only <code>fflate</code> — the ZIP + DEFLATE layer, ~8 kB, <strong>0 transitive deps</strong>.</li>
+                <li>Runs on raw bytes: Node, browsers and edge runtimes.</li>
+                <li>TypeScript-first, shipped as both ESM and CJS.</li>
+                <li>Filesystem access is lazy (<code>node:fs/promises</code>), so the core stays runtime-agnostic.</li>
+              </ul>
+            </article>
+          </div>
+
+          <h3 class="subhead">Benchmark</h3>
+          <p>
+            A 5000 × 8 workbook was generated with ExcelJS and read back with each
+            library. Median read time and published package size (gzip, including
+            dependencies):
+          </p>
+
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th scope="col">Library</th>
+                  <th scope="col">Read (median)</th>
+                  <th scope="col">Size (gzip, incl. deps)</th>
+                  <th scope="col">Transitive deps</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="is-highlight">
+                  <th scope="row">sheet-lite</th>
+                  <td><strong>120 ms</strong></td>
+                  <td><strong>~20.3 kB</strong></td>
+                  <td><strong>0</strong></td>
+                </tr>
+                <tr>
+                  <th scope="row">ExcelJS</th>
+                  <td>192 ms</td>
+                  <td>249.9 kB</td>
+                  <td>9</td>
+                </tr>
+                <tr>
+                  <th scope="row">SheetJS (<code>xlsx</code>)</th>
+                  <td>218 ms</td>
+                  <td>136.4 kB</td>
+                  <td>7</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="bars" role="img" aria-label="Package size comparison in gzip kilobytes: sheet-lite about 20.3, ExcelJS 249.9, SheetJS 136.4">
+            <div class="bars__row">
+              <span class="bars__label">sheet-lite</span>
+              <span class="bars__track"><span class="bars__fill bars__fill--accent" style="width: 8%"></span></span>
+              <span class="bars__value">~20.3 kB</span>
+            </div>
+            <div class="bars__row">
+              <span class="bars__label">ExcelJS</span>
+              <span class="bars__track"><span class="bars__fill" style="width: 100%"></span></span>
+              <span class="bars__value">249.9 kB</span>
+            </div>
+            <div class="bars__row">
+              <span class="bars__label">SheetJS</span>
+              <span class="bars__track"><span class="bars__fill" style="width: 55%"></span></span>
+              <span class="bars__value">136.4 kB</span>
+            </div>
+          </div>
+          <p class="note">
+            sheet-lite's ~20.3 kB is <strong>8.5 kB</strong> of library code plus
+            <strong>11.8 kB</strong> for fflate. Reproduce it yourself with
+            <code>pnpm bench</code>.
+          </p>
+        </section>
+
+        <!-- ============================ INSTALL ============================ -->
+        <section class="section" id="install">
+          <h2>Install</h2>
+          <p class="section__lead">
+            One package. One dependency. Nothing else is pulled in transitively.
+          </p>
+
+          <div class="code-block">
+            <div class="code-block__header">
+              <span class="code-block__lang">bash</span>
+            </div>
+            <pre><code>npm install sheet-lite</code></pre>
+          </div>
+
+          <p>Or with your package manager of choice:</p>
+
+          <div class="code-block">
+            <div class="code-block__header">
+              <span class="code-block__lang">bash</span>
+            </div>
+            <pre><code>pnpm add sheet-lite
+yarn add sheet-lite</code></pre>
+          </div>
+
+          <div class="callout callout--muted">
+            <p>
+              Requires <strong>Node&nbsp;≥&nbsp;18</strong>. In browsers and edge
+              runtimes, import the ESM build and work with raw bytes — no filesystem
+              access needed.
+            </p>
+          </div>
+        </section>
+
+        <!-- ============================ QUICKSTART ============================ -->
+        <section class="section" id="quickstart">
+          <h2>Quickstart</h2>
+          <p class="section__lead">
+            Read a file, patch a cell and add a row — everything else stays byte-identical.
+          </p>
+
+          <div class="code-block">
+            <div class="code-block__header">
+              <span class="code-block__lang">ts</span>
+            </div>
+            <pre><code>import { Workbook } from 'sheet-lite';
+
+const wb = await Workbook.readFile('./report.xlsx');
+const ws = wb.getWorksheet('Sheet1')!;
+
+// Read a value and its type
+console.log(ws.getCell('A1').value, ws.getCell('A1').type);
+
+// Edit — only the changed cells are rewritten
+ws.getCell('B2').value = 1234.56;
+ws.getCell('B3').value = new Date();
+ws.getCell('B4').value = { formula: 'SUM(B2:B3)', result: 1234.56 };
+ws.addRow(['North', 128]);
+
+await wb.writeFile('./report-edited.xlsx');
+// data validations, conditional formatting, merges and other parts stay intact</code></pre>
+          </div>
+
+          <div class="callout callout--muted">
+            <p>
+              <code>Workbook.read()</code> is synchronous and works on raw bytes:
+              <code>Workbook.read(bytes)</code> where <code>bytes</code> is a
+              <code>Uint8Array</code>, <code>ArrayBuffer</code> or any
+              <code>ArrayBufferView</code>. <code>readFile()</code> and
+              <code>writeFile()</code> are the only filesystem-bound helpers and are
+              Node-only.
+            </p>
+          </div>
+        </section>
+
+        <!-- ============================ API ============================ -->
+        <section class="section" id="api">
+          <h2>API reference</h2>
+          <p class="section__lead">
+            The public surface is small and synchronous where it can be. Everything
+            below is exported from the package root.
+          </p>
+
+          <div class="code-block">
+            <div class="code-block__header">
+              <span class="code-block__lang">ts</span>
+            </div>
+            <pre><code>import {
+  Workbook,
+  Worksheet,
+  Row,
+  Cell,
+  ValueType,
+  typeOf,
+  SheetLiteError,
+  ZipSecurityError,
+} from 'sheet-lite';</code></pre>
+          </div>
+
+          <!-- Workbook -->
+          <article class="api" id="api-workbook">
+            <h3><span class="api__kind api__kind--class">class</span> Workbook</h3>
+            <p>
+              The entry point. Loads an OPC package and writes it back losslessly.
+            </p>
+
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col">Member</th>
+                    <th scope="col">Signature</th>
+                    <th scope="col">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>read</code></td>
+                    <td><code>static read(input: Uint8Array | ArrayBuffer | ArrayBufferView): Workbook</code></td>
+                    <td>Read a workbook from raw bytes (Node, browser, edge). Synchronous.</td>
+                  </tr>
+                  <tr>
+                    <td><code>readFile</code></td>
+                    <td><code>static readFile(path: string): Promise&lt;Workbook&gt;</code></td>
+                    <td>Read from a filesystem path. <em>Node only.</em></td>
+                  </tr>
+                  <tr>
+                    <td><code>worksheets</code></td>
+                    <td><code>get worksheets: Worksheet[]</code></td>
+                    <td>All sheets, in package order.</td>
+                  </tr>
+                  <tr>
+                    <td><code>sheetNames</code></td>
+                    <td><code>get sheetNames: string[]</code></td>
+                    <td>Sheet names in package order. Also available as <code>getSheetNames()</code>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>getWorksheet</code></td>
+                    <td><code>getWorksheet(nameOrId: string | number): Worksheet | undefined</code></td>
+                    <td>Find a sheet by name or numeric id.</td>
+                  </tr>
+                  <tr>
+                    <td><code>toBuffer</code></td>
+                    <td><code>toBuffer(): Uint8Array</code></td>
+                    <td>Serialize. If nothing changed, the original bytes are returned verbatim.</td>
+                  </tr>
+                  <tr>
+                    <td><code>writeFile</code></td>
+                    <td><code>writeFile(path: string): Promise&lt;void&gt;</code></td>
+                    <td>Write to a filesystem path. <em>Node only.</em></td>
+                  </tr>
+                  <tr>
+                    <td><code>metadata</code></td>
+                    <td><code>get metadata: PackageMeta</code></td>
+                    <td>Read-only package metadata (date system, shared strings, styles).</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <!-- Worksheet -->
+          <article class="api" id="api-worksheet">
+            <h3><span class="api__kind api__kind--class">class</span> Worksheet</h3>
+            <p>
+              A single sheet. Reading values and patching cells/rows are supported;
+              everything else in the sheet XML is preserved.
+            </p>
+
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col">Member</th>
+                    <th scope="col">Signature</th>
+                    <th scope="col">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>name</code></td>
+                    <td><code>readonly name: string</code></td>
+                    <td>Sheet name.</td>
+                  </tr>
+                  <tr>
+                    <td><code>id</code></td>
+                    <td><code>readonly id: number</code></td>
+                    <td>Numeric sheet id from the package.</td>
+                  </tr>
+                  <tr>
+                    <td><code>rowCount</code></td>
+                    <td><code>get rowCount: number</code></td>
+                    <td>Highest populated row, including pending edits.</td>
+                  </tr>
+                  <tr>
+                    <td><code>columnCount</code></td>
+                    <td><code>get columnCount: number</code></td>
+                    <td>Highest populated column, including pending edits.</td>
+                  </tr>
+                  <tr>
+                    <td><code>getCell</code></td>
+                    <td><code>getCell(ref: string): Cell</code><br /><code>getCell(row: number, col: number): Cell</code></td>
+                    <td>Get a cell by A1 reference or by 1-based row and column.</td>
+                  </tr>
+                  <tr>
+                    <td><code>getRow</code></td>
+                    <td><code>getRow(rowNumber: number): Row</code></td>
+                    <td>Get a row and its populated cells.</td>
+                  </tr>
+                  <tr>
+                    <td><code>eachRow</code></td>
+                    <td><code>eachRow(cb: (row: Row, rowNumber: number) =&gt; void): void</code></td>
+                    <td>Iterate populated rows in ascending order.</td>
+                  </tr>
+                  <tr>
+                    <td><code>addRow</code></td>
+                    <td><code>addRow(values: CellValue[]): Row</code></td>
+                    <td>Append a row starting at column A. Returns the created <code>Row</code>.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h4 class="subhead subhead--small"><code>Row</code></h4>
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col">Member</th>
+                    <th scope="col">Signature</th>
+                    <th scope="col">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>number</code></td>
+                    <td><code>readonly number: number</code></td>
+                    <td>1-based row number.</td>
+                  </tr>
+                  <tr>
+                    <td><code>cells</code></td>
+                    <td><code>readonly cells: Cell[]</code></td>
+                    <td>Populated cells, sorted by column.</td>
+                  </tr>
+                  <tr>
+                    <td><code>getCell</code></td>
+                    <td><code>getCell(col: number): Cell</code></td>
+                    <td>Get a cell in this row by 1-based column.</td>
+                  </tr>
+                  <tr>
+                    <td><code>eachCell</code></td>
+                    <td><code>eachCell(cb: (cell: Cell, col: number) =&gt; void): void</code></td>
+                    <td>Iterate the row's cells.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <!-- Cell -->
+          <article class="api" id="api-cell">
+            <h3><span class="api__kind api__kind--class">class</span> Cell</h3>
+            <p>
+              A reference to a single cell. <code>value</code> is both readable and
+              writable; writing registers a surgical patch.
+            </p>
+
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col">Member</th>
+                    <th scope="col">Signature</th>
+                    <th scope="col">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>address</code></td>
+                    <td><code>get address: string</code></td>
+                    <td>A1-style address, e.g. <code>"B2"</code>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>row</code></td>
+                    <td><code>get row: number</code></td>
+                    <td>1-based row number.</td>
+                  </tr>
+                  <tr>
+                    <td><code>col</code></td>
+                    <td><code>get col: number</code></td>
+                    <td>1-based column number.</td>
+                  </tr>
+                  <tr>
+                    <td><code>value</code></td>
+                    <td><code>get/set value: CellValue</code></td>
+                    <td>Current value. Assigning marks the cell as changed.</td>
+                  </tr>
+                  <tr>
+                    <td><code>type</code></td>
+                    <td><code>get type: ValueTypeName</code></td>
+                    <td>
+                      <code>'Null' | 'Number' | 'String' | 'Date' | 'Boolean' | 'Formula' | 'Error'</code>.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><code>model</code></td>
+                    <td><code>get model: { address; type; value }</code></td>
+                    <td>Convenience snapshot of the cell.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <!-- Value types -->
+          <article class="api" id="api-valuetype">
+            <h3><span class="api__kind api__kind--type">union</span> CellValue</h3>
+            <p>
+              Values are modelled to align with ExcelJS's <code>CellValue</code>, so
+              migration is straightforward:
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>type CellValue =
+  | null
+  | number
+  | string
+  | boolean
+  | Date
+  | { error: string }
+  | { formula: string; result?: CellValue };</code></pre>
+            </div>
+
+            <p>
+              <code>Cell.type</code> and the exported <code>typeOf()</code> report the
+              kind as a <code>ValueTypeName</code>. The <code>ValueType</code> map gives
+              the numeric constants:
+            </p>
+
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col"><code>ValueType</code></th>
+                    <th scope="col">Value</th>
+                    <th scope="col">Example</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>Null</code></td><td>0</td><td><code>null</code></td></tr>
+                  <tr><td><code>Number</code></td><td>1</td><td><code>1234.56</code></td></tr>
+                  <tr><td><code>String</code></td><td>2</td><td><code>'North'</code></td></tr>
+                  <tr><td><code>Date</code></td><td>3</td><td><code>new Date()</code></td></tr>
+                  <tr><td><code>Boolean</code></td><td>4</td><td><code>true</code></td></tr>
+                  <tr><td><code>Formula</code></td><td>5</td><td><code>{ formula: 'A1+B1' }</code></td></tr>
+                  <tr><td><code>Error</code></td><td>6</td><td><code>{ error: '#DIV/0!' }</code></td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p class="note">
+              Values are read from strings, numbers, booleans, dates (both the 1900 and
+              1904 systems), formulas (with their cached result), and inline/shared
+              strings.
+            </p>
+          </article>
+
+          <!-- Errors -->
+          <article class="api" id="api-errors">
+            <h3><span class="api__kind api__kind--class">class</span> Errors</h3>
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col">Type</th>
+                    <th scope="col"><code>code</code></th>
+                    <th scope="col">Thrown when</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>SheetLiteError</code></td>
+                    <td>varies, e.g. <code>'NOT_XLSX'</code></td>
+                    <td>The input isn't a valid XLSX package (every error carries a stable machine-readable code).</td>
+                  </tr>
+                  <tr>
+                    <td><code>ZipSecurityError</code></td>
+                    <td><code>'ZIP_SECURITY'</code></td>
+                    <td>The archive violates a safety limit: path traversal, too many entries, oversized parts or a suspicious compression ratio.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook, SheetLiteError, ZipSecurityError } from 'sheet-lite';
+
+try {
+  const wb = await Workbook.readFile('./maybe-not-excel.xlsx');
+} catch (error) {
+  if (error instanceof ZipSecurityError) {
+    console.error('Rejected unsafe archive:', error.code);
+  } else if (error instanceof SheetLiteError) {
+    console.error('Invalid package:', error.code);
+  } else {
+    throw error;
+  }
+}</code></pre>
+            </div>
+          </article>
+        </section>
+
+        <!-- ============================ EXAMPLES ============================ -->
+        <section class="section" id="examples">
+          <h2>Examples</h2>
+          <p class="section__lead">
+            Copy-pasteable snippets. Every write below preserves the rest of the file.
+          </p>
+
+          <!-- 1. Read values -->
+          <article class="example" id="ex-read">
+            <h3>1 · Read values</h3>
+            <p>
+              Read individual cells by A1 reference or by row/column, or walk every
+              populated row with <code>eachRow</code>.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook } from 'sheet-lite';
+
+const wb = await Workbook.readFile('./report.xlsx');
+const ws = wb.getWorksheet('Sheet1')!;
+
+// Random access
+const a1 = ws.getCell('A1');
+console.log(a1.value); // e.g. 'Region'
+console.log(a1.type);  // 'String'
+
+// Same cell, by 1-based coordinates
+const b2 = ws.getCell(2, 2);
+console.log(b2.address, b2.value); // 'B2', 128
+
+// Iterate populated rows in ascending order
+ws.eachRow((row, rowNumber) => {
+  const values = row.cells.map((cell) => cell.value);
+  console.log(rowNumber, values);
+});</code></pre>
+            </div>
+          </article>
+
+          <!-- 2. Edit & preserve -->
+          <article class="example" id="ex-edit">
+            <h3>2 · Edit a cell and preserve formatting</h3>
+            <p>
+              Assigning to <code>value</code> registers a patch for that cell only. Its
+              original style index — fonts, fills, borders and number format — is
+              retained, and every other byte of the sheet XML is carried over as-is.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook } from 'sheet-lite';
+
+const wb = await Workbook.readFile('./report.xlsx');
+const ws = wb.getWorksheet('Sheet1')!;
+
+// Patch a single styled cell — the surrounding file stays intact
+ws.getCell('B2').value = 1234.56;
+
+await wb.writeFile('./report-edited.xlsx');
+// data validations, conditional formatting, merges and images survive</code></pre>
+            </div>
+            <div class="callout callout--muted">
+              <p>
+                If you change nothing at all, <code>toBuffer()</code> returns the
+                original bytes verbatim — a true no-op round-trip.
+              </p>
+            </div>
+          </article>
+
+          <!-- 3. Add rows -->
+          <article class="example" id="ex-add-rows">
+            <h3>3 · Add rows</h3>
+            <p>
+              <code>addRow</code> appends below the last populated row, starting at
+              column A. It accepts the same <code>CellValue</code> union, and returns
+              the created row.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook } from 'sheet-lite';
+
+const wb = await Workbook.readFile('./report.xlsx');
+const ws = wb.getWorksheet('Sheet1')!;
+
+ws.addRow(['North', 128, true]);
+ws.addRow(['South', 94, false]);
+
+// addRow returns the new Row
+const row = ws.addRow(['West', 61, true]);
+console.log(row.number);          // e.g. 42
+console.log(row.getCell(1).value); // 'West'
+
+await wb.writeFile('./report-edited.xlsx');</code></pre>
+            </div>
+          </article>
+
+          <!-- 4. Dates -->
+          <article class="example" id="ex-dates">
+            <h3>4 · Working with dates</h3>
+            <p>
+              Date cells are decoded into native <code>Date</code> objects, honouring
+              both the 1900 and 1904 date systems. Writing a <code>Date</code> stores
+              the Excel serial number; when you patch a cell that already carries a date
+              number format, that format is preserved so Excel still renders a date.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook } from 'sheet-lite';
+
+const wb = await Workbook.readFile('./report.xlsx');
+const ws = wb.getWorksheet('Sheet1')!;
+
+// Reading: date-formatted cells come back as Date instances
+const when = ws.getCell('B3').value;
+if (when instanceof Date) {
+  console.log(when.toISOString());
+}
+
+// Writing: a Date becomes its Excel serial number
+ws.getCell('B3').value = new Date('2026-01-15T00:00:00Z');
+
+await wb.writeFile('./report-edited.xlsx');</code></pre>
+            </div>
+            <div class="callout callout--muted">
+              <p>
+                Need manual control? The helpers <code>serialToDate()</code> and
+                <code>dateToSerial()</code> are exported for converting between Excel
+                serial numbers and <code>Date</code> values.
+              </p>
+            </div>
+          </article>
+
+          <!-- 5. Formulas -->
+          <article class="example" id="ex-formulas">
+            <h3>5 · Formulas</h3>
+            <p>
+              A formula cell is read as <code>{ formula, result }</code>, where
+              <code>result</code> is Excel's cached value. To write one, provide the
+              formula text and, optionally, the cached result.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook } from 'sheet-lite';
+
+const wb = await Workbook.readFile('./report.xlsx');
+const ws = wb.getWorksheet('Sheet1')!;
+
+// Reading a formula exposes its text and cached result
+const total = ws.getCell('B5').value;
+// { formula: 'SUM(B2:B4)', result: 1234.56 }
+
+// Writing a formula (result is optional)
+ws.getCell('B5').value = { formula: 'SUM(B2:B4)', result: 1234.56 };
+
+await wb.writeFile('./report-edited.xlsx');</code></pre>
+            </div>
+            <div class="callout callout--muted">
+              <p>
+                sheet-lite does <strong>not</strong> evaluate formulas. The
+                <code>result</code> is the cached value Excel stored — supply it when
+                you want readers that don't recalculate to show a value.
+              </p>
+            </div>
+          </article>
+        </section>
+
+        <footer class="footer">
+          <p>
+            <strong>sheet-lite</strong> · MIT licensed · read, write and edit
+            <code>.xlsx</code> without breaking your file.
+          </p>
+          <p class="footer__muted">
+            Dependency-free documentation site · no build step, no network requests.
+          </p>
+        </footer>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -1,6 +1,8 @@
 import type { PackageMeta } from '../reader/package-reader';
 import { coordsToRef, parseSheet, refToCoords, type ParsedSheet } from '../reader/sheet-parser';
-import { serializeSheet } from '../writer/sheet-writer';
+import { serializeSheet, type CellEdit } from '../writer/sheet-writer';
+import type { StyleRegistry } from '../writer/style-registry';
+import type { CellStyleOverrides, FillProps, FontProps } from '../model/style';
 import { type CellValue } from '../model/value';
 import { Cell } from './cell';
 
@@ -21,7 +23,7 @@ export class Row {
 }
 
 /**
- * A single sheet. v0.2 supports reading values and *patching* cells/rows while
+ * A single sheet. Reading values and patching cells, styles and merges while
  * preserving everything else in the sheet XML.
  */
 export class Worksheet {
@@ -32,13 +34,24 @@ export class Worksheet {
 
   private readonly parsed: ParsedSheet;
   private readonly meta: PackageMeta;
-  private readonly changes = new Map<string, CellValue>();
+  private readonly registry: StyleRegistry | null;
+  private readonly changes = new Map<string, CellEdit>();
+  private readonly newMerges = new Set<string>();
+  private readonly removedMerges = new Set<string>();
 
-  constructor(name: string, id: number, partName: string, xml: string, meta: PackageMeta) {
+  constructor(
+    name: string,
+    id: number,
+    partName: string,
+    xml: string,
+    meta: PackageMeta,
+    registry: StyleRegistry | null,
+  ) {
     this.name = name;
     this.id = id;
     this.partName = partName;
     this.meta = meta;
+    this.registry = registry;
     this.parsed = parseSheet(xml, meta);
   }
 
@@ -85,36 +98,88 @@ export class Worksheet {
     const rowNumbers = new Set<number>();
     for (const record of this.parsed.cells.values()) rowNumbers.add(record.row);
     for (const ref of this.changes.keys()) rowNumbers.add(refToCoords(ref).row);
-    for (const n of [...rowNumbers].sort((x, y) => x - y)) {
-      callback(this.getRow(n), n);
-    }
+    for (const n of [...rowNumbers].sort((x, y) => x - y)) callback(this.getRow(n), n);
   }
 
   /** Append a row of values (column A, B, C, …). */
   addRow(values: CellValue[]): Row {
     const rowNumber = this.rowCount + 1;
-    values.forEach((value, index) => {
-      this.setCellValue(coordsToRef(rowNumber, index + 1), value);
-    });
+    values.forEach((value, index) => this.setCellValue(coordsToRef(rowNumber, index + 1), value));
     return this.getRow(rowNumber);
+  }
+
+  /** Merge a range, e.g. "A1:C1". */
+  mergeCells(ref: string): void {
+    this.newMerges.add(ref.toUpperCase());
+    this.removedMerges.delete(ref.toUpperCase());
+  }
+
+  /** Remove a merge by its range reference. */
+  unmergeCells(ref: string): void {
+    const key = ref.toUpperCase();
+    this.newMerges.delete(key);
+    this.removedMerges.add(key);
   }
 
   // --- internal ---
 
   getCellValue(ref: string): CellValue {
-    if (this.changes.has(ref)) return this.changes.get(ref)!;
+    const edit = this.changes.get(ref);
+    if (edit?.hasValue) return edit.value;
     return this.parsed.cells.get(ref)?.value ?? null;
   }
 
+  getCellNumFmt(ref: string): string {
+    const edit = this.changes.get(ref);
+    if (edit?.style?.numFmt !== undefined) return edit.style.numFmt;
+    if (!this.registry) return 'General';
+    return this.registry.numFmtCode(this.baseStyleIndex(ref));
+  }
+
+  getCellFont(ref: string): FontProps {
+    const base = this.registry ? this.registry.fontProps(this.baseStyleIndex(ref)) ?? {} : {};
+    const edit = this.changes.get(ref);
+    return edit?.style?.font ? { ...base, ...edit.style.font } : base;
+  }
+
+  getCellFill(ref: string): FillProps | undefined {
+    const base = this.registry ? this.registry.fillProps(this.baseStyleIndex(ref)) : undefined;
+    const edit = this.changes.get(ref);
+    return edit?.style?.fill ? { ...base, ...edit.style.fill } : base;
+  }
+
   setCellValue(ref: string, value: CellValue): void {
-    this.changes.set(ref.toUpperCase(), value);
+    const key = ref.toUpperCase();
+    const existing = this.changes.get(key) ?? { hasValue: false, value: null };
+    this.changes.set(key, { ...existing, hasValue: true, value });
+  }
+
+  setCellStyle(ref: string, patch: CellStyleOverrides): void {
+    const key = ref.toUpperCase();
+    const existing = this.changes.get(key) ?? { hasValue: false, value: null };
+    const style: CellStyleOverrides = { ...existing.style };
+    if (patch.numFmt !== undefined) style.numFmt = patch.numFmt;
+    if (patch.font) style.font = { ...style.font, ...patch.font };
+    if (patch.fill) style.fill = { ...style.fill, ...patch.fill };
+    this.changes.set(key, { ...existing, style });
   }
 
   isDirty(): boolean {
-    return this.changes.size > 0;
+    return this.changes.size > 0 || this.newMerges.size > 0 || this.removedMerges.size > 0;
   }
 
-  serialize(): string {
-    return serializeSheet(this.parsed, this.changes, this.meta.date1904);
+  serialize(registry: StyleRegistry | null): string {
+    return serializeSheet(
+      this.parsed,
+      this.changes,
+      this.meta.date1904,
+      registry,
+      [...this.newMerges],
+      [...this.removedMerges],
+    );
+  }
+
+  private baseStyleIndex(ref: string): number {
+    return this.parsed.cells.get(ref)?.styleIndex ?? 0;
   }
 }

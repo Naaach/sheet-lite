@@ -1,6 +1,6 @@
 {
   "name": "sheet-lite",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Lightweight and secure library to read, write and edit Excel (XLSX) without breaking your file. Zero transitive dependencies.",
   "type": "module",
   "license": "MIT",
@@ -8,25 +8,32 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
+  "unpkg": "./dist/index.mjs",
+  "jsdelivr": "./dist/index.mjs",
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=18"
   },
+  "packageManager": "pnpm@12.11.2",
   "scripts": {
     "build": "tsdown",
     "test": "vitest run",
     "test:watch": "vitest",
     "bench": "tsdown && node scripts/bench.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm build && pnpm test"
   },
   "keywords": [
     "xlsx",
@@ -37,10 +44,23 @@
     "write",
     "edit",
     "lightweight",
-    "zero-dependencies"
+    "zero-dependencies",
+    "exceljs-alternative"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Naaach/sheet-lite.git"
+  },
+  "homepage": "https://github.com/Naaach/sheet-lite#readme",
+  "bugs": {
+    "url": "https://github.com/Naaach/sheet-lite/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "dependencies": {
-    "fflate": "^0.8.3"
+    "fflate": "^0.8.2"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
