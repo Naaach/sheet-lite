@@ -6,13 +6,18 @@ const EPOCH_1900 = 25569;
 const DAYS_1904_OFFSET = 1462;
 
 export function serialToDate(serial: number, date1904: boolean): Date {
-  const s = date1904 ? serial + DAYS_1904_OFFSET : serial;
+  let s = date1904 ? serial + DAYS_1904_OFFSET : serial;
+  // Excel wrongly treats 1900 as a leap year: serials below the phantom
+  // 1900-02-29 are off by one on the shifted scale.
+  if (!date1904 && s < 60) s += 1;
   return new Date(Math.round((s - EPOCH_1900) * MS_PER_DAY));
 }
 
 export function dateToSerial(date: Date, date1904: boolean): number {
-  const serial = date.getTime() / MS_PER_DAY + EPOCH_1900;
-  return date1904 ? serial - DAYS_1904_OFFSET : serial;
+  let serial = date.getTime() / MS_PER_DAY + EPOCH_1900;
+  if (date1904) return serial - DAYS_1904_OFFSET;
+  if (serial < 61) serial -= 1;
+  return serial;
 }
 
 /** Built-in Excel number-format ids that represent dates/times. */
@@ -22,9 +27,13 @@ const BUILTIN_DATE_FORMATS = new Set([
 ]);
 
 export function isDateFormatCode(code: string): boolean {
-  // Remove quoted literals and escaped characters, then look for date tokens.
-  const cleaned = code.replace(/"[^"]*"/g, '').replace(/\\./g, '');
-  return /[ymdhs]/i.test(cleaned) && !/^\[/.test(cleaned.trim());
+  // Remove quoted literals, bracket sections ([Red], [$€-x], [$-409]) and
+  // escaped characters, then look for date/time tokens.
+  const cleaned = code
+    .replace(/"[^"]*"/g, '')
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/\\./g, '');
+  return /[ymdhs]/i.test(cleaned);
 }
 
 export function isBuiltinDateFormat(numFmtId: number): boolean {

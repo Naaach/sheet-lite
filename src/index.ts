@@ -21,4 +21,4 @@ export { serialToDate, dateToSerial, isDateFormatCode } from './model/dates';
 export type { PackageMeta, SheetRef } from './reader/package-reader';
 export { refToCoords, coordsToRef, columnToNumber, numberToColumn } from './reader/sheet-parser';
 // XML helpers are exported for advanced use.
-export { parseXml, escapeXml } from './xml/xml';
+export { parseXml, escapeXml, decodeEntities } from './xml/xml';

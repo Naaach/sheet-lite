@@ -89,18 +89,20 @@ Runtime: Node (fs) + Browser (Blob)    <- TS, ESM + CJS
 |---|---|
 | `pnpm test` | **29/29 passing** (incl. real ExcelJS-generated files) |
 | `pnpm typecheck` (TS 7) | clean |
-| `pnpm build` (`tsdown`) | ESM 27.4 kB / **gzip 8.7 kB** (excl. `fflate`) |
+| `pnpm build` (`tsdown`) | ESM 40.3 kB / **gzip 11.9 kB** (excl. `fflate`) |
 | Values vs SheetJS | match on a real file (numbers, strings, booleans, formulas) |
 | Preservation | data validations, conditional formatting and merges survive an edit |
 | Styles & merges | round-trip through our own reader; the result parses with SheetJS |
 
-Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated parts, value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits).
+Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated parts, value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits), styles, merges and the audit regression cases.
+
+> An independent audit (see [`reports/audit.md`](../reports/audit.md)) was run against v0.3. Every finding was fixed and is covered by tests: invalid `mergeCells` placement (was emitted inside `<sheetData>`), 1900 leap-year off-by-one, date-format detection (locale prefixes vs accounting formats), positional cells without `r`, empty `<v>` read as `0`, out-of-range XML entities throwing, and ZIP inflation limits.
 
 ### Benchmark (5000 × 8 worksheet generated with ExcelJS)
 
 | Library | Read (median) | Published size (gzip, incl. deps) | Transitive deps |
 |---|---|---|---|
-| **sheet-lite** | **120 ms** | **~20.3 kB** (8.5 kB + fflate 11.8 kB) | **0** |
+| **sheet-lite** | **149 ms** | **~23.9 kB** (12.1 kB + fflate 11.8 kB) | **0** |
 | ExcelJS | 192 ms | 249.9 kB | 9 |
 | SheetJS (`xlsx`) | 218 ms | 136.4 kB | 7 |
 

@@ -154,11 +154,15 @@ const NAMED: Record<string, string> = {
 export function decodeEntities(value: string): string {
   if (!value.includes('&')) return value;
   return value.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, entity: string) => {
+    const toChar = (codePoint: number): string =>
+      Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : '\uFFFD';
     if (entity.startsWith('#x') || entity.startsWith('#X')) {
-      return String.fromCodePoint(parseInt(entity.slice(2), 16));
+      return toChar(parseInt(entity.slice(2), 16));
     }
     if (entity.startsWith('#')) {
-      return String.fromCodePoint(parseInt(entity.slice(1), 10));
+      return toChar(parseInt(entity.slice(1), 10));
     }
     return NAMED[entity] ?? whole;
   });

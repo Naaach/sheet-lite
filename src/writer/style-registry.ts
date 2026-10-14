@@ -1,4 +1,5 @@
 import { parseXml, child, childrenOf, type XmlNode } from '../xml/xml';
+import { SheetLiteError } from '../zip/errors';
 import type { CellStyleOverrides, FillProps, FontProps } from '../model/style';
 
 /** Common built-in number-format codes and their ids. */
@@ -69,7 +70,8 @@ export class StyleRegistry {
   private addedXfs: string[] = [];
 
   constructor(private xml: string) {
-    const styleSheet = parseXml(xml).children.find((n) => n.name === 'styleSheet') ?? parseXml(xml);
+    const document = parseXml(xml);
+    const styleSheet = document.children.find((n) => n.name === 'styleSheet') ?? document;
 
     this.numFmtsNode = child(styleSheet, 'numFmts') ?? null;
     if (this.numFmtsNode) {
@@ -83,14 +85,22 @@ export class StyleRegistry {
     const maxId = [...this.numFmtById.keys()].reduce((a, b) => Math.max(a, b), 163);
     this.nextNumFmtId = Math.max(164, maxId + 1);
 
-    this.fontsNode = child(styleSheet, 'fonts')!;
-    for (const font of childrenOf(this.fontsNode, 'font')) this.fontRaws.push(normalize(slice(xml, font)));
+    const fontsNode = child(styleSheet, 'fonts');
+    const fillsNode = child(styleSheet, 'fills');
+    const cellXfsNode = child(styleSheet, 'cellXfs');
+    if (!fontsNode || !fillsNode || !cellXfsNode) {
+      throw new SheetLiteError(
+        'styles.xml is missing required sections (fonts/fills/cellXfs)',
+        'BAD_STYLES',
+      );
+    }
+    this.fontsNode = fontsNode;
+    this.fillsNode = fillsNode;
+    this.cellXfsNode = cellXfsNode;
 
-    this.fillsNode = child(styleSheet, 'fills')!;
-    for (const fill of childrenOf(this.fillsNode, 'fill')) this.fillRaws.push(normalize(slice(xml, fill)));
-
-    this.cellXfsNode = child(styleSheet, 'cellXfs')!;
-    for (const xf of childrenOf(this.cellXfsNode, 'xf')) {
+    for (const font of childrenOf(fontsNode, 'font')) this.fontRaws.push(normalize(slice(xml, font)));
+    for (const fill of childrenOf(fillsNode, 'fill')) this.fillRaws.push(normalize(slice(xml, fill)));
+    for (const xf of childrenOf(cellXfsNode, 'xf')) {
       this.xfDescs.push({
         numFmtId: Number(xf.attrs.numFmtId ?? '0'),
         fontId: Number(xf.attrs.fontId ?? '0'),

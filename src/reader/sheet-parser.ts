@@ -18,8 +18,10 @@ export interface CellRecord {
 export interface RowRecord {
   r: number;
   start: number;
+  openEnd: number;
   closeStart: number;
   end: number;
+  selfClosing: boolean;
 }
 
 export interface MergeChild {
@@ -34,6 +36,8 @@ export interface ParsedSheet {
   rows: Map<number, RowRecord>;
   /** Index of the `</sheetData>` close tag in the original XML. */
   sheetDataClose: number;
+  /** Index just after `</sheetData>` (where sibling elements such as mergeCells go). */
+  sheetDataEnd: number;
   mergeCells: { start: number; openEnd: number; closeStart: number; end: number } | null;
   mergeChildren: MergeChild[];
   maxRow: number;
@@ -71,23 +75,24 @@ function computeValue(c: XmlNode, meta: PackageMeta): CellValue {
   const t = c.attrs.t;
   const styleIndex = c.attrs.s ? Number(c.attrs.s) : 0;
   const vNode = child(c, 'v');
-  const rawValue = vNode ? textOf(vNode) : undefined;
+  const rawText = vNode ? textOf(vNode) : undefined;
+  const hasText = rawText !== undefined && rawText !== '';
   const fNode = child(c, 'f');
 
   let value: CellValue = null;
   if (t === 's') {
-    value = meta.sharedStrings[Number(rawValue)] ?? '';
+    value = hasText ? meta.sharedStrings[Number(rawText)] ?? '' : '';
   } else if (t === 'inlineStr') {
     const isNode = child(c, 'is');
     value = isNode ? textOf(isNode) : '';
   } else if (t === 'str') {
-    value = rawValue ?? '';
+    value = rawText ?? '';
   } else if (t === 'b') {
-    value = rawValue === '1';
+    value = hasText ? rawText === '1' : null;
   } else if (t === 'e') {
-    value = { error: rawValue ?? '' };
-  } else if (rawValue !== undefined) {
-    const numeric = Number(rawValue);
+    value = hasText ? { error: rawText } : null;
+  } else if (hasText) {
+    const numeric = Number(rawText);
     value = meta.dateStyleIndexes.has(styleIndex)
       ? serialToDate(numeric, meta.date1904)
       : numeric;
@@ -112,13 +117,28 @@ export function parseSheet(xml: string, meta: PackageMeta): ParsedSheet {
     for (const rowNode of childrenOf(sheetData, 'row')) {
       implicitRow += 1;
       const r = rowNode.attrs.r ? Number(rowNode.attrs.r) : implicitRow;
-      rows.set(r, { r, start: rowNode.start, closeStart: rowNode.closeStart, end: rowNode.end });
+      rows.set(r, {
+        r,
+        start: rowNode.start,
+        openEnd: rowNode.openEnd,
+        closeStart: rowNode.closeStart,
+        end: rowNode.end,
+        selfClosing: rowNode.closeStart === rowNode.openEnd,
+      });
       if (r > maxRow) maxRow = r;
 
+      let prevCol = 0;
       for (const c of childrenOf(rowNode, 'c')) {
-        const ref = c.attrs.r;
-        if (!ref) continue;
-        const { row, col } = refToCoords(ref);
+        let ref = c.attrs.r;
+        let col: number;
+        if (ref) {
+          col = refToCoords(ref).col;
+        } else {
+          col = prevCol + 1;
+          ref = coordsToRef(r, col);
+        }
+        prevCol = col;
+        const { row } = refToCoords(ref);
         const value = computeValue(c, meta);
         cells.set(ref, {
           ref,
@@ -145,11 +165,14 @@ export function parseSheet(xml: string, meta: PackageMeta): ParsedSheet {
   }
 
   const closeIdx = xml.lastIndexOf('</sheetData>');
+  const sheetDataClose = closeIdx === -1 ? xml.lastIndexOf('</worksheet>') : closeIdx;
+  const sheetDataEnd = closeIdx === -1 ? sheetDataClose : closeIdx + '</sheetData>'.length;
   return {
     xml,
     cells,
     rows,
-    sheetDataClose: closeIdx === -1 ? xml.lastIndexOf('</worksheet>') : closeIdx,
+    sheetDataClose,
+    sheetDataEnd,
     mergeCells: mergeCellsNode
       ? {
           start: mergeCellsNode.start,

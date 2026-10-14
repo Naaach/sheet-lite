@@ -69,11 +69,29 @@ export function readZip(
   const raw = toUint8(input);
   const lim: ReadLimits = { ...DEFAULT_LIMITS, ...limits };
 
+  const rejected: string[] = [];
   let rawMap: Record<string, Uint8Array>;
   try {
-    rawMap = unzipSync(raw);
+    rawMap = unzipSync(raw, {
+      filter: (file) => {
+        if (file.name.endsWith('/')) return false;
+        if (!isSafeEntryName(file.name)) {
+          rejected.push(file.name);
+          return false;
+        }
+        // Reject oversized entries BEFORE inflating them (anti zip-bomb).
+        if (file.originalSize > lim.maxEntryUncompressed) {
+          rejected.push(file.name);
+          return false;
+        }
+        return true;
+      },
+    });
   } catch (error) {
     throw new ZipSecurityError(`Unable to read ZIP archive: ${(error as Error).message}`);
+  }
+  if (rejected.length > 0) {
+    throw new ZipSecurityError(`Unsafe entry rejected: ${JSON.stringify(rejected[0])}`);
   }
 
   const names = Object.keys(rawMap);
@@ -88,8 +106,6 @@ export function readZip(
   let total = 0;
 
   for (const originalName of names) {
-    // Directory markers (e.g. "_rels/") carry no data; skip them safely.
-    if (originalName.endsWith('/')) continue;
     if (!isSafeEntryName(originalName)) {
       throw new ZipSecurityError(`Unsafe entry name rejected: ${JSON.stringify(originalName)}`);
     }

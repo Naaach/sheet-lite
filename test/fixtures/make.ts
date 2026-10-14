@@ -64,6 +64,11 @@ const APP = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
  * (uses fflate directly) so it can act as an external test fixture.
  */
 export function makeMinimalXlsx(): Uint8Array {
+  return makeXlsxWithSheet(SHEET1);
+}
+
+/** Build a package with a custom worksheet part (for edge-case tests). */
+export function makeXlsxWithSheet(sheetXml: string): Uint8Array {
   return zipSync(
     {
       '[Content_Types].xml': strToU8(CONTENT_TYPES),
@@ -72,7 +77,7 @@ export function makeMinimalXlsx(): Uint8Array {
       'docProps/app.xml': strToU8(APP),
       'xl/workbook.xml': strToU8(WORKBOOK),
       'xl/_rels/workbook.xml.rels': strToU8(WORKBOOK_RELS),
-      'xl/worksheets/sheet1.xml': strToU8(SHEET1),
+      'xl/worksheets/sheet1.xml': strToU8(sheetXml),
       'xl/styles.xml': strToU8(STYLES),
     },
     { level: 6 },

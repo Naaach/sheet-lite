@@ -63,6 +63,7 @@ export function serializeSheet(
   const ops: Op[] = [];
   const insertsByPos = new Map<number, { col: number; xml: string }[]>();
   const newRows = new Map<number, { col: number; xml: string }[]>();
+  const selfClosingRows = new Map<number, { col: number; xml: string }[]>();
 
   for (const [ref, edit] of changes) {
     const existing = sheet.cells.get(ref);
@@ -84,10 +85,14 @@ export function serializeSheet(
     }
     const { row, col } = refToCoords(ref);
     const rowRec = sheet.rows.get(row);
-    if (rowRec) {
+    if (rowRec && !rowRec.selfClosing) {
       const list = insertsByPos.get(rowRec.closeStart) ?? [];
       list.push({ col, xml });
       insertsByPos.set(rowRec.closeStart, list);
+    } else if (rowRec && rowRec.selfClosing) {
+      const list = selfClosingRows.get(row) ?? [];
+      list.push({ col, xml });
+      selfClosingRows.set(row, list);
     } else {
       const list = newRows.get(row) ?? [];
       list.push({ col, xml });
@@ -98,6 +103,17 @@ export function serializeSheet(
   for (const [pos, list] of insertsByPos) {
     list.sort((a, b) => a.col - b.col);
     ops.push({ pos, end: pos, text: list.map((entry) => entry.xml).join('') });
+  }
+
+  for (const [rowNum, list] of selfClosingRows) {
+    list.sort((a, b) => a.col - b.col);
+    const rowRec = sheet.rows.get(rowNum)!;
+    const openTag = sheet.xml.slice(rowRec.start, rowRec.openEnd).replace(/\/>\s*$/, '>');
+    ops.push({
+      pos: rowRec.start,
+      end: rowRec.end,
+      text: openTag + list.map((entry) => entry.xml).join('') + '</row>',
+    });
   }
 
   const newRowXml: string[] = [];
@@ -122,31 +138,32 @@ function applyMergeEdits(sheet: ParsedSheet, newMerges: string[], removedMerges:
   const container = sheet.mergeCells;
   let present = sheet.mergeChildren;
 
+  const removedSet = new Set(removedMerges);
   if (removedMerges.length > 0) {
-    const removedSet = new Set(removedMerges);
     for (const child of present) {
-      if (removedSet.has(child.ref)) {
-        ops.push({ pos: child.start, end: child.end, text: '' });
-      }
+      if (removedSet.has(child.ref)) ops.push({ pos: child.start, end: child.end, text: '' });
     }
     present = present.filter((child) => !removedSet.has(child.ref));
   }
 
-  if (newMerges.length === 0) return;
+  const hasAdd = newMerges.length > 0;
   const additions = newMerges.map((ref) => `<mergeCell ref="${ref}"/>`).join('');
 
   if (container) {
+    if (!hasAdd && removedMerges.length === 0) return;
     const count = present.length + newMerges.length;
     const open = sheet.xml.slice(container.start, container.openEnd);
     const updated = /\bcount="\d+"/.test(open)
       ? open.replace(/\bcount="\d+"/, `count="${count}"`)
       : open.replace(/>$/, ` count="${count}">`);
     ops.push({ pos: container.start, end: container.openEnd, text: updated });
-    ops.push({ pos: container.closeStart, end: container.closeStart, text: additions });
-  } else {
+    // Additions go at the end of the container; removals are separate range ops.
+    if (hasAdd) ops.push({ pos: container.closeStart, end: container.closeStart, text: additions });
+  } else if (hasAdd) {
+    // mergeCells is a sibling of sheetData, so it goes AFTER </sheetData>.
     ops.push({
-      pos: sheet.sheetDataClose,
-      end: sheet.sheetDataClose,
+      pos: sheet.sheetDataEnd,
+      end: sheet.sheetDataEnd,
       text: `<mergeCells count="${newMerges.length}">${additions}</mergeCells>`,
     });
   }

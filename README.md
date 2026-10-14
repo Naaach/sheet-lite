@@ -55,7 +55,7 @@ Generated a 5000 × 8 workbook with ExcelJS and read it back:
 
 | Library | Read (median) | Published size (gzip, incl. deps) | Transitive deps |
 |---|---|---|---|
-| **sheet-lite** | **120 ms** | **~20.3 kB** (8.5 kB + fflate 11.8 kB) | **0** |
+| **sheet-lite** | **149 ms** | **~23.9 kB** (12.1 kB + fflate 11.8 kB) | **0** |
 | ExcelJS | 192 ms | 249.9 kB | 9 |
 | SheetJS (`xlsx`) | 218 ms | 136.4 kB | 7 |
 
