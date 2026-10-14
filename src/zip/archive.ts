@@ -88,6 +88,8 @@ export function readZip(
   let total = 0;
 
   for (const originalName of names) {
+    // Directory markers (e.g. "_rels/") carry no data; skip them safely.
+    if (originalName.endsWith('/')) continue;
     if (!isSafeEntryName(originalName)) {
       throw new ZipSecurityError(`Unsafe entry name rejected: ${JSON.stringify(originalName)}`);
     }

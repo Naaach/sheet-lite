@@ -70,24 +70,38 @@ Runtime: Node (fs) + Browser (Blob)    <- TS, ESM + CJS
 
 ---
 
-## 4. Current state — v0.1 (done)
+## 4. Current state — v0.2 (read + edit)
 
-- [x] `Workbook.read()` / `Workbook.readFile()` — parse an OPC package.
-- [x] `Workbook.toBuffer()` / `writeFile()` — **patch-only** write (no-op returns the original bytes exactly).
-- [x] `PartStore` — in-memory parts + dirty tracking.
-- [x] OPC helpers: `[Content_Types].xml` parsing, relationship path resolution.
-- [x] Security by design: path-traversal, entry-count, per-entry/total size and compression-ratio limits.
+- [x] `Workbook.read()` / `readFile()` / `toBuffer()` / `writeFile()`.
+- [x] **Patch-only** write (no-op returns the original bytes exactly).
+- [x] `PartStore` with dirty tracking; hardened ZIP layer.
+- [x] OPC helpers: `[Content_Types].xml` parsing, relationship resolution.
+- [x] Value reading: number, string, boolean, Date (1900/1904), formula (cached result), inline & shared strings.
+- [x] Public `Worksheet` / `Cell` / `Row` API (`getWorksheet`, `getCell`, `getRow`, `eachRow`, `addRow`).
+- [x] Editing: surgical patch of only the changed cells; every untouched byte is preserved.
 - [x] TypeScript-first, ESM + CJS, runtime-agnostic core (filesystem via lazy `node:fs/promises`).
 
 ### Verification (executed)
 
 | Check | Result |
 |---|---|
-| `pnpm test` | **13/13 passing** |
+| `pnpm test` | **25/25 passing** (incl. real ExcelJS-generated files) |
 | `pnpm typecheck` (TS 7) | clean |
-| `pnpm build` (`tsdown`) | ESM **8.59 kB** / gzip **3.11 kB** · CJS 8.92 kB (excl. `fflate`) |
+| `pnpm build` (`tsdown`) | ESM 27.4 kB / **gzip 8.7 kB** (excl. `fflate`) |
+| Values vs SheetJS | match on a real file (numbers, strings, booleans, formulas) |
+| Preservation | data validations, conditional formatting and merges survive an edit |
 
-Tests cover: reading every expected part, exact no-op round-trip, byte-identical preservation of unrelated parts when one part changes, content-types parsing, relationship resolution, and ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits).
+Tests cover: reading every part, exact no-op round-trip, byte-identical preservation of unrelated parts, value types, dates 1900/1904, formula round-trip, compatibility with a real ExcelJS file (cross-checked against SheetJS), ZIP hardening (traversal, absolute paths, null bytes, entry-count, size and ratio limits).
+
+### Benchmark (5000 × 8 worksheet generated with ExcelJS)
+
+| Library | Read (median) | Published size (gzip, incl. deps) | Transitive deps |
+|---|---|---|---|
+| **sheet-lite** | **120 ms** | **~20.3 kB** (8.5 kB + fflate 11.8 kB) | **0** |
+| ExcelJS | 192 ms | 249.9 kB | 9 |
+| SheetJS (`xlsx`) | 218 ms | 136.4 kB | 7 |
+
+> **Honesty note:** in the specific scenario we tested, **ExcelJS 4.4.0 preserved** the conditional formatting / data validation, so we do not assert the opposite in our own tests. The preservation guarantee is verified on *our* side (real files + byte-identical untouched parts).
 
 ---
 
@@ -96,9 +110,9 @@ Tests cover: reading every expected part, exact no-op round-trip, byte-identical
 | Version | Goal | "Done" criteria |
 |---|---|---|
 | **v0.1** ✅ | Read + lossless patch-only write | Round-trip tests green |
-| **v0.2** | Public `Worksheet`/`Cell` API; read values (types, dates 1900/1904, shared/inline strings); edit cells & rows preserving everything else; reuse original deflate streams | Reads 20 real files with values matching SheetJS; edited files open without repair |
-| **v0.3** | Basic styles + merges (bold/font/fill/`numFmt`/width) | Visual render matches original; styles de-duplicated |
-| **v0.4** | Browser / edge (Deno, Workers) adapters; size benchmark vs ExcelJS | Example running on Workers + Deno; published size numbers |
+| **v0.2** ✅ | Values API + editing (preserving) + real-file compatibility + benchmark | 25/25 tests; values match SheetJS; benchmark published |
+| **v0.3** | Styles API + merges (bold/font/fill/`numFmt`/width); reuse original deflate streams | Visual render matches; faster writes |
+| **v0.4** | Browser / edge (Deno, Workers) adapters | Example running on Workers + Deno |
 | **v0.5** | Streaming reads for large files | 100k rows under a fixed memory ceiling |
 
 **Explicitly out of scope (for now):** `.xls`/`.xlsb`, encryption, formula evaluation, creating charts/pivots/images/macros (preserved, not created).
@@ -119,15 +133,27 @@ pnpm build       # tsdown -> dist/
 ```
 src/
   index.ts                # public API
+  api/workbook.ts         # Workbook: read / toBuffer / worksheets
+  api/worksheet.ts        # Worksheet: getCell / eachRow / addRow
+  api/cell.ts             # Cell
+  xml/xml.ts              # tiny XML reader + entity helpers
+  reader/package-reader.ts# workbook, rels, shared strings, styles
+  reader/sheet-parser.ts  # cells, rows, references, value decoding
+  writer/sheet-writer.ts  # surgical cell patching
+  model/value.ts          # CellValue / ValueType
+  model/dates.ts          # Excel serial <-> Date (1900/1904)
   zip/archive.ts          # ZIP read/write over fflate + safety limits
   zip/errors.ts           # SheetLiteError / ZipSecurityError
   opc/part-store.ts       # in-memory parts + dirty tracking
   opc/content-types.ts    # [Content_Types].xml parser
   opc/relationships.ts    # relationship path resolution
-  api/workbook.ts         # Workbook.read / toBuffer (patch-only)
 test/
-  fixtures/make.ts        # external .xlsx fixture (built with fflate directly)
-  noop-roundtrip.test.ts
-  zip-hardening.test.ts
-  opc.test.ts
+  fixtures/make.ts        # external .xlsx fixture
+  noop-roundtrip.test.ts  # lossless round-trip
+  edit.test.ts            # editing preserves everything else
+  values.test.ts          # value reading + types
+  compat.test.ts          # real ExcelJS file vs SheetJS
+  zip-hardening.test.ts   # security limits
+  opc.test.ts             # content-types + paths
+scripts/bench.mjs         # size + read benchmark
 ```

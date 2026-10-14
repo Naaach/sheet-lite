@@ -2,29 +2,27 @@
 
 > Read, write and **edit** Excel (`.xlsx`) without breaking your file — lightweight, secure and with **zero transitive dependencies**.
 
-`sheet-lite` is being built around one promise: **when you open an Excel file and change a value, everything else stays intact.** Most libraries re-serialize the whole package and silently drop formatting, data validations, charts and images. `sheet-lite` is designed to *patch* only what changed.
+When you open an Excel file, change a value and save, most libraries rebuild the whole package and can silently drop formatting, data validations, conditional formatting or images. `sheet-lite` is built to **patch only what changed** and leave everything else untouched.
 
-See [`docs/STATUS.md`](docs/STATUS.md) for the full background, locked decisions and roadmap.
+See [`docs/STATUS.md`](docs/STATUS.md) for the full background, decisions and roadmap.
 
 ## Status
 
-**v0.1 — foundation.** Reading a package and writing it back losslessly (patch-only) already works and is tested.
+**v0.2 — read + edit.** You can read values and patch cells/rows while the rest of the file stays intact.
 
-- [x] `Workbook.read()` / `Workbook.readFile()` (Node) — parse an OPC package with hardened ZIP limits
-- [x] `Workbook.toBuffer()` / `writeFile()` — **patch-only** write: if nothing changed, the original bytes are returned verbatim
-- [x] `PartStore` — in-memory parts + dirty tracking
-- [x] Minimal OPC helpers: `[Content_Types].xml` parsing, relationship path resolution
+- [x] `Workbook.read()` / `readFile()` — parse a package (hardened ZIP limits)
+- [x] Value reading: strings, numbers, booleans, dates (1900/1904), formulas (cached result), inline & shared strings
+- [x] `Worksheet` / `Cell` / `Row` API: `getWorksheet`, `getCell('A1')`, `getCell(row, col)`, `eachRow`, `addRow`
+- [x] **Editing without breaking:** only changed cells are rewritten; other parts stay byte-identical
+- [x] Patch-only write: if nothing changed, the original bytes are returned verbatim
 - [x] Security by design: path-traversal, entry-count, size and compression-ratio limits
-- [ ] Cell values / styles (v0.2)
-- [ ] Editing cells & rows (v0.2)
-- [ ] Browser / edge adapters (v0.4)
+- [ ] Styles API, streaming, browser/edge adapters (roadmap)
 
-## Design
+## Install
 
-- **Patch-only + copy-verbatim.** Only re-serialize the parts that actually changed; everything else is carried over untouched.
-- **Zero transitive dependencies.** The only direct dependency is `fflate` (~8 KB, no transitive deps), used for the ZIP/DEFLATE layer.
-- **Runtime-agnostic core.** The core works on `Uint8Array` / `ArrayBuffer`. Filesystem helpers (`readFile`/`writeFile`) load `node:fs/promises` lazily, so the browser bundle stays clean.
-- **Security first.** ZIP bombs, path traversal and absurd ratios are rejected before any parsing.
+```bash
+npm install sheet-lite
+```
 
 ## Usage
 
@@ -32,16 +30,35 @@ See [`docs/STATUS.md`](docs/STATUS.md) for the full background, locked decisions
 import { Workbook } from 'sheet-lite';
 
 const wb = await Workbook.readFile('./report.xlsx');
+const ws = wb.getWorksheet('Sheet1')!;
 
-// v0.1: low-level part access (a friendly Worksheet/Cell API lands in v0.2)
-const parts = wb.parts();
-const sheet = parts.get('xl/worksheets/sheet1.xml')!;
-parts.set('xl/worksheets/sheet1.xml', new TextEncoder().encode(
-  new TextDecoder().decode(sheet).replace('Hello', 'Hola'),
-));
+// read
+console.log(ws.getCell('A1').value, ws.getCell('A1').type);
+
+// edit — only this cell is rewritten
+ws.getCell('B2').value = 1234.56;
+ws.getCell('B3').value = new Date();
+ws.getCell('B4').value = { formula: 'SUM(B2:B3)', result: 1234.56 };
+ws.addRow(['nuevo', 7]);
 
 await wb.writeFile('./report-edited.xlsx');
-// every other part is byte-for-byte identical
+// data validations, conditional formatting, merges and other parts stay intact
+```
+
+## Benchmark
+
+Generated a 5000 × 8 workbook with ExcelJS and read it back:
+
+| Library | Read (median) | Published size (gzip, incl. deps) | Transitive deps |
+|---|---|---|---|
+| **sheet-lite** | **120 ms** | **~20.3 kB** (8.5 kB + fflate 11.8 kB) | **0** |
+| ExcelJS | 192 ms | 249.9 kB | 9 |
+| SheetJS (`xlsx`) | 218 ms | 136.4 kB | 7 |
+
+Run it yourself:
+
+```bash
+pnpm bench
 ```
 
 ## Development
@@ -51,6 +68,7 @@ pnpm install
 pnpm test        # vitest
 pnpm typecheck   # tsc --noEmit
 pnpm build       # tsdown -> dist/
+pnpm bench       # size + read benchmark
 ```
 
 ## License
