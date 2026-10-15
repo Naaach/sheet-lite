@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>sheet-lite 0.5.0 — read, write &amp; edit .xlsx without breaking your file</title>
+    <title>sheet-lite 0.6.0 — read, write &amp; edit .xlsx without breaking your file</title>
     <meta
       name="description"
       content="sheet-lite reads, writes and edits Excel (.xlsx) files without breaking them. Patch-only writes, read-only streaming, borders/alignment/rich text, zero transitive dependencies, ESM + CJS, works on raw bytes in Node, browsers and edge runtimes."
@@ -135,7 +135,7 @@
       <main class="content" id="content">
         <!-- ============================ HERO ============================ -->
         <section class="hero" id="overview">
-          <p class="eyebrow">TypeScript · ESM + CJS · zero transitive dependencies · v0.5.0</p>
+          <p class="eyebrow">TypeScript · ESM + CJS · zero transitive dependencies · v0.6.0</p>
           <h1 class="hero__title">
             Read, write and <em>edit</em> Excel.<br />
             Without breaking your file.
@@ -326,9 +326,9 @@
 
         <!-- ============================ FEATURES ============================ -->
         <section class="section" id="features">
-          <h2>What 0.5.0 actually ships</h2>
+          <h2>What 0.6.0 ships</h2>
           <p class="section__lead">
-            Everything below is in the published <code>0.5.0</code> package. Anything
+            Everything below is in the <code>0.6.0</code> package. Anything
             that is <em>not</em> there is listed under
             <a href="#limitations">Limitations</a>.
           </p>
@@ -369,7 +369,7 @@
               <h3>Streaming &amp; runtimes</h3>
               <ul class="check-list">
                 <li>Read-only streaming reads from <code>sheet-lite/stream</code>, or lazily via <code>Workbook.openStream()</code>.</li>
-                <li>Incremental, bounded-memory writes from <code>sheet-lite/write</code>, or lazily via <code>Workbook.create()</code> (on <code>main</code>).</li>
+                <li>Incremental, bounded-memory writes from <code>sheet-lite/write</code>, or lazily via <code>Workbook.create()</code>.</li>
                 <li>Bounded memory: a 100 000 × 8 sheet in 10.2 MB of live heap instead of 673 MB.</li>
                 <li>Identical values and types to the eager reader — same hardened ZIP layer, same rejection rules.</li>
                 <li>Browser and edge adapters: <code>readBlob()</code>, <code>toBlob()</code>, <code>download()</code>.</li>
@@ -398,7 +398,7 @@
             <div class="code-block__header">
               <span class="code-block__lang">bash</span>
             </div>
-            <pre><code>npm install sheet-lite@0.5.0</code></pre>
+            <pre><code>npm install sheet-lite@0.6.0</code></pre>
           </div>
 
           <p>Or with your package manager of choice:</p>
@@ -549,7 +549,7 @@ import { WorkbookWriter } from 'sheet-lite/write';</code></pre>
                   <tr>
                     <td><code>create</code></td>
                     <td><code>static create(options?: WorkbookWriterOptions): Promise&lt;WorkbookWriter&gt;</code></td>
-                    <td>Lazy alias for <code>WorkbookWriter.create</code> (<code>sheet-lite/write</code>) — build a work&shy;book from scratch with bounded memory. <em>On <code>main</code>.</em></td>
+                    <td>Lazy alias for <code>WorkbookWriter.create</code> (<code>sheet-lite/write</code>) — build a work&shy;book from scratch with bounded memory.</td>
                   </tr>
                   <tr>
                     <td><code>worksheets</code></td>
@@ -574,7 +574,7 @@ import { WorkbookWriter } from 'sheet-lite/write';</code></pre>
                   <tr>
                     <td><code>removeWorksheet</code></td>
                     <td><code>removeWorksheet(nameOrId: string | number, options?: { prune?: boolean }): void</code></td>
-                    <td>Remove a sheet, its rels and its registration (and, by default on <code>main</code>, the parts only it owned). Throws <code>SHEET_NOT_FOUND</code> / <code>LAST_SHEET</code>.</td>
+                    <td>Remove a sheet, its rels and its registration, and by default the parts only it owned. Throws <code>SHEET_NOT_FOUND</code> / <code>LAST_SHEET</code>.</td>
                   </tr>
                   <tr>
                     <td><code>toBuffer</code></td>
@@ -1118,8 +1118,8 @@ await wb.close();</code></pre>
           <article class="api" id="api-write">
             <h3><span class="api__kind api__kind--class">class</span> WorkbookWriter</h3>
             <p>
-              Incremental, bounded-memory creation from <code>sheet-lite/write</code>
-              (on <code>main</code>). Rows are serialized, deflated and streamed to the
+              Incremental, bounded-memory creation from <code>sheet-lite/write</code>.
+              Rows are serialized, deflated and streamed to the
               target as they are added, so a million-row sheet never sits in memory. Reach
               it lazily from the root with <code>Workbook.create()</code>.
             </p>
@@ -1719,8 +1719,8 @@ await wb.commit(); // …or: const bytes = await wb.toBuffer()</code></pre>
                   <td>Orphan parts on removal</td>
                   <td>
                     <code>removeWorksheet()</code> removes the sheet, its rels and its
-                    registration, drops a stale <code>calcChain.xml</code>, and (on
-                    <code>main</code>) prunes the parts only that sheet owned. Anything a
+                    registration, drops a stale <code>calcChain.xml</code>, and prunes the
+                    parts only that sheet owned. Anything a
                     surviving relationship still points at is kept.
                   </td>
                 </tr>
@@ -1746,7 +1746,7 @@ await wb.commit(); // …or: const bytes = await wb.toBuffer()</code></pre>
                     an existing file needs the eager <code>Workbook</code>, which keeps
                     untouched parts in memory to re-serialize them verbatim. Creating a new
                     workbook with bounded memory is <code>sheet-lite/write</code>
-                    (<code>Workbook.create</code>, on <code>main</code>).
+                    (<code>Workbook.create</code>).
                   </td>
                 </tr>
                 <tr>
@@ -1776,11 +1776,9 @@ await wb.commit(); // …or: const bytes = await wb.toBuffer()</code></pre>
             </table>
           </div>
 
-          <h3 class="subhead">Next release — on <code>main</code>, not yet on npm</h3>
+          <h3 class="subhead">New in <code>0.6.0</code></h3>
           <p>
-            These are implemented and tested on <code>main</code> and will ship in the
-            next version; the published <code>sheet-lite@0.5.0</code> does not have them
-            yet:
+            This release adds two things on top of <code>0.5.0</code>'s read/edit/style/sheets/streaming:
           </p>
           <div class="callout">
             <p>
@@ -1807,9 +1805,7 @@ await wb.commit(); // …or: const bytes = await wb.toBuffer()</code></pre>
             <code>.xlsx</code> without breaking your file.
           </p>
           <p class="footer__muted">
-            This page documents the published <strong>0.5.0</strong> API plus the
-            unreleased additions on <code>main</code> (next: <code>0.6.0</code>) — the
-            incremental writer and orphan-part pruning. Numbers are
+            This page documents the <strong>0.6.0</strong> API. Numbers are
             medians from one machine (Node 24, Windows) with ±10–15% cross-run variance;
             published sizes come from bundlephobia. “Excel” is a trademark of Microsoft
             Corporation; ExcelJS and SheetJS are mentioned as factual comparisons.

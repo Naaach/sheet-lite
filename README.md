@@ -8,7 +8,7 @@ When you open an Excel file, change a value and save, most libraries rebuild the
 
 ## Status
 
-**v0.6 (next, unreleased) — adds an incremental writer and orphan-part pruning** on top of the published **0.5.0** (read, edit, style, sheets, streaming). `Workbook.create()` / `sheet-lite/write` and `removeWorksheet({ prune })` below are on `main`, not yet on npm.
+**v0.6.0 — read, edit, style, sheets, streaming, plus incremental writes and orphan-part pruning.** Everything below ships in `0.6.0`.
 
 - [x] `Workbook.read()` / `readFile()` / `toBuffer()` / `writeFile()`
 - [x] Value reading: strings, numbers, booleans, dates (1900/1904), formulas (cached result), inline & shared strings
