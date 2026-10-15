@@ -5,11 +5,17 @@
  * no-op round-trip + a single-cell edit, and (when LibreOffice is installed)
  * checks that the edited file re-opens without a repair prompt.
  *
+ * The legacy binaries in the same folder (`.xlsb`, `.xls`) are classified
+ * explicitly as UNSUPPORTED: they must be refused, with the exact coded error
+ * sheet-lite promises. Accepting one of them is a failure (the format support
+ * claim changed without the corpus noticing), as is refusing it with a
+ * different code or with a raw crash.
+ *
  * Run after a build:   pnpm build && node scripts/validate-corpus.mjs
  *
- * Exit code is non-zero only when a file that OPENED also broke an invariant.
- * Unsupported files (zip64 / encrypted / data descriptors) are reported as
- * "unsupported" and do NOT fail the run as long as the rejection is coded.
+ * Exit code is non-zero when a file that OPENED broke an invariant, when a
+ * file was refused for an unexpected reason, or when an unsupported format
+ * started being accepted.
  */
 import { existsSync, readdirSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -20,11 +26,24 @@ import { Workbook, SheetLiteError } from '../dist/index.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DIR = join(here, '..', 'test', 'fixtures', 'real');
-const files = existsSync(DIR)
-  ? readdirSync(DIR)
-      .filter((name) => /\.(xlsx|xlsm)$/i.test(name))
-      .sort()
-  : [];
+/** Formats sheet-lite claims to read. */
+const SUPPORTED_EXT = /\.(xlsx|xlsm)$/i;
+/**
+ * Formats that are deliberately NOT supported. They must keep being refused
+ * with these exact codes (keep in sync with `test/corpus.test.ts`):
+ * `NOT_A_ZIP` is what the low-level ZIP layer reports for "not an archive".
+ */
+const UNSUPPORTED = {
+  xlsb: { code: 'NOT_XLSX', match: /binary Excel workbook \(\.xlsb\)/ },
+  xls: { code: 'NOT_XLSX', match: /OLE2 compound file/ },
+};
+const UNSUPPORTED_EXT = /\.(xlsb|xls)$/i;
+
+const entries = existsSync(DIR) ? readdirSync(DIR).filter((name) => !/\.(md|txt)$/i.test(name)).sort() : [];
+const files = entries.filter((name) => SUPPORTED_EXT.test(name));
+const binaries = entries.filter((name) => UNSUPPORTED_EXT.test(name));
+// Nothing may fall through both filters unnoticed (a renamed .xls, a .csv, ...).
+const unclassified = entries.filter((name) => !SUPPORTED_EXT.test(name) && !UNSUPPORTED_EXT.test(name));
 
 const kib = (bytes) => `${(bytes / 1024).toFixed(1)} kB`;
 const equal = (a, b) => Buffer.from(a).equals(Buffer.from(b));
@@ -48,13 +67,16 @@ function libreOfficeOpens(bin, bytes, workdir) {
   return !res.error && res.status === 0;
 }
 
-if (files.length === 0) {
+if (files.length === 0 && binaries.length === 0) {
   console.log('No real-world files yet. Drop .xlsx/.xlsm into test/fixtures/real/ and re-run.');
   process.exit(0);
 }
 
 const soffice = findLibreOffice();
-console.log(`Corpus: ${files.length} file(s) · LibreOffice gate: ${soffice ?? 'not installed (skipped)'}\n`);
+console.log(
+  `Corpus: ${files.length} readable file(s) · ${binaries.length} unsupported binary file(s) · ` +
+    `LibreOffice gate: ${soffice ?? 'not installed (skipped)'}\n`,
+);
 
 let failures = 0;
 const rows = [];
@@ -126,10 +148,69 @@ for (const file of files) {
   rows.push(result);
 }
 
-const width = Math.max(...rows.map((r) => r.file.length), 4);
-for (const r of rows) {
-  console.log(`${r.file.padEnd(width)}  ${r.size.padStart(9)}  ${r.status.padEnd(11)}  ${r.detail}`);
+// Legacy binaries (.xlsb / .xls): sheet-lite does not read them, so the only
+// correct outcome is an honest, coded refusal. Anything else — a silent
+// accept, a wrong code, a message that does not name the format, or a crash —
+// fails the run: the documented rejection is part of the contract.
+const legacyRows = [];
+for (const file of binaries) {
+  const bytes = new Uint8Array(readFileSync(join(DIR, file)));
+  const ext = file.match(UNSUPPORTED_EXT)[0].slice(1).toLowerCase();
+  const expected = UNSUPPORTED[ext];
+  const row = { file, size: kib(bytes.length), status: 'unsupported', detail: '' };
+  legacyRows.push(row);
+
+  if (!expected) {
+    row.status = 'FAIL';
+    row.detail = `no expected rejection declared for .${ext} — extend UNSUPPORTED`;
+  } else {
+    try {
+      Workbook.read(bytes);
+      row.status = 'FAIL';
+      row.detail = `.${ext} is not supported but was accepted — refusing it is the contract`;
+    } catch (caught) {
+      if (!(caught instanceof SheetLiteError)) {
+        row.status = 'FAIL';
+        row.detail = `crashed instead of failing cleanly: ${String(caught)}`;
+      } else if (caught.code !== expected.code) {
+        row.status = 'FAIL';
+        row.detail = `${caught.code} — expected ${expected.code}`;
+      } else if (!expected.match.test(caught.message)) {
+        row.status = 'FAIL';
+        row.detail = `${caught.code}: "${caught.message}" — does not name the format`;
+      } else {
+        row.detail = `${caught.code} · refused as expected`;
+      }
+    }
+  }
+  if (row.status === 'FAIL') failures += 1;
 }
 
-console.log(`\n${rows.filter((r) => r.status === 'ok').length} ok · ${rows.filter((r) => r.status === 'unsupported').length} unsupported · ${failures} failed`);
+// A file that is neither readable nor a known legacy binary is a silent gap in
+// the corpus: report it instead of ignoring it.
+for (const file of unclassified) {
+  legacyRows.push({
+    file,
+    size: '-',
+    status: 'FAIL',
+    detail: 'unclassified corpus file (neither a supported .xlsx/.xlsm nor a known legacy binary)',
+  });
+  failures += 1;
+}
+
+const width = Math.max(...[...rows, ...legacyRows].map((r) => r.file.length), 4);
+const print = (list, heading) => {
+  if (list.length === 0) return;
+  if (heading) console.log(`${heading}\n`);
+  for (const r of list) {
+    console.log(`${r.file.padEnd(width)}  ${String(r.size).padStart(9)}  ${r.status.padEnd(11)}  ${r.detail}`);
+  }
+  console.log('');
+};
+print(rows, 'Supported (.xlsx/.xlsm):');
+print(legacyRows, 'Unsupported by design (.xlsb/.xls) — must stay refused:');
+
+const okCount = rows.filter((r) => r.status === 'ok').length;
+const unsupportedCount = rows.filter((r) => r.status === 'unsupported').length + legacyRows.filter((r) => r.status === 'unsupported').length;
+console.log(`${okCount} ok · ${unsupportedCount} unsupported · ${failures} failed`);
 process.exit(failures > 0 ? 1 : 0);

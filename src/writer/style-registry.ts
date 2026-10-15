@@ -1,5 +1,7 @@
-import { parseXml, child, childrenOf, escapeXml, type XmlNode } from '../xml/xml';
+import { parseXml, child, childrenOf, decodeEntities, escapeXml, type XmlNode } from '../xml/xml';
 import { SheetLiteError } from '../zip/errors';
+import { BUILTIN_BY_ID, BUILTIN_NUMFMT } from '../model/dates';
+import { assertStylePatch } from './style-validate';
 import type {
   AlignmentProps,
   BorderProps,
@@ -9,31 +11,6 @@ import type {
   FontProps,
 } from '../model/style';
 
-/** Common built-in number-format codes and their ids. */
-const BUILTIN_NUMFMT: Record<string, number> = {
-  General: 0,
-  '0': 1,
-  '0.00': 2,
-  '#,##0': 3,
-  '#,##0.00': 4,
-  '0%': 9,
-  '0.00%': 10,
-  '0.00E+00': 11,
-  '# ?/?': 12,
-  '# ??/??': 13,
-  'mm-dd-yy': 14,
-  'd-mmm-yy': 15,
-  'd-mmm': 16,
-  'mmm-yy': 17,
-  'h:mm AM/PM': 18,
-  'h:mm:ss AM/PM': 19,
-  'h:mm': 20,
-  'h:mm:ss': 21,
-  'm/d/yy h:mm': 22,
-  '@': 49,
-};
-const BUILTIN_BY_ID = new Map<number, string>(Object.entries(BUILTIN_NUMFMT).map(([c, id]) => [id, c]));
-
 interface XfDesc {
   numFmtId: number;
   fontId: number;
@@ -41,24 +18,12 @@ interface XfDesc {
   borderId: number;
   /** Parsed `<alignment/>` child of the xf (absent = no alignment). */
   alignmentProps?: AlignmentProps;
+  /** Canonical `<alignment/>` markup ('' = no alignment): the dedup key. */
+  alignmentXml: string;
   raw: string;
 }
 
 const normalize = (xml: string): string => xml.replace(/>\s+</g, '><').trim();
-
-/** Semantic equality of two alignment models (undefined ≡ no alignment). */
-function alignmentEquals(a: AlignmentProps | undefined, b: AlignmentProps | undefined): boolean {
-  const keys = [
-    'horizontal',
-    'vertical',
-    'wrapText',
-    'shrinkToFit',
-    'indent',
-    'textRotation',
-    'readingOrder',
-  ] as const;
-  return keys.every((key) => (a?.[key] ?? undefined) === (b?.[key] ?? undefined));
-}
 
 /** `<left/>` … `<diagonal/>` children of a `<border>`, in schema order. */
 const BORDER_SIDES = ['left', 'right', 'top', 'bottom', 'diagonal'] as const;
@@ -204,12 +169,14 @@ export class StyleRegistry {
     }
     for (const xf of childrenOf(cellXfsNode, 'xf')) {
       const alignmentNode = child(xf, 'alignment');
+      const alignmentProps = alignmentNode ? parseAlignmentNode(alignmentNode) : undefined;
       this.xfDescs.push({
         numFmtId: Number(xf.attrs.numFmtId ?? '0'),
         fontId: Number(xf.attrs.fontId ?? '0'),
         fillId: Number(xf.attrs.fillId ?? '0'),
         borderId: Number(xf.attrs.borderId ?? '0'),
-        alignmentProps: alignmentNode ? parseAlignmentNode(alignmentNode) : undefined,
+        alignmentProps,
+        alignmentXml: alignmentXmlFor(alignmentProps),
         raw: slice(xml, xf),
       });
     }
@@ -243,7 +210,7 @@ export class StyleRegistry {
     const sz = /<sz val="([\d.]+)"/.exec(raw);
     if (sz) props.size = Number(sz[1]);
     const name = /<name val="([^"]*)"/.exec(raw);
-    if (name) props.name = name[1];
+    if (name) props.name = decodeEntities(name[1]!);
     const color = /<color rgb="([0-9A-Fa-f]{8})"/.exec(raw);
     if (color) props.color = color[1];
     return props;
@@ -257,7 +224,7 @@ export class StyleRegistry {
     const pattern = /<patternFill[^>]*patternType="([^"]*)"/.exec(raw);
     if (!pattern) return undefined;
     const fg = /<fgColor rgb="([0-9A-Fa-f]{8})"/.exec(raw);
-    return { type: 'pattern', pattern: pattern[1], fgColor: fg?.[1] };
+    return { type: 'pattern', pattern: decodeEntities(pattern[1]!), fgColor: fg?.[1] };
   }
 
   /** Border props of a `cellXfs` entry (sides with a style/color only). */
@@ -274,13 +241,20 @@ export class StyleRegistry {
     return props ? { ...props } : undefined;
   }
 
-  /** Resolve a cell's final `cellXfs` index given style overrides. */
+  /**
+   * Resolve a cell's final `cellXfs` index given style overrides.
+   *
+   * @throws {SheetLiteError} `BAD_STYLE` for a value the schema forbids (the
+   *   same rule the incremental writer applies, `writer/style-validate.ts`).
+   */
   resolveIndex(baseIndex: number, overrides: CellStyleOverrides): number {
+    assertStylePatch(overrides);
     const base = this.xfDescs[baseIndex] ?? {
       numFmtId: 0,
       fontId: 0,
       fillId: 0,
       borderId: 0,
+      alignmentXml: '',
       raw: '',
     };
     let { numFmtId, fontId, fillId, borderId } = base;
@@ -305,21 +279,21 @@ export class StyleRegistry {
       borderId = this.borderIdFor({ ...baseBorder, ...overrides.border }, base.borderId);
       changed = true;
     }
-    const baseAlignment = base.alignmentProps;
     const mergedAlignment = overrides.alignment
-      ? { ...baseAlignment, ...overrides.alignment }
-      : baseAlignment;
+      ? { ...base.alignmentProps, ...overrides.alignment }
+      : base.alignmentProps;
     if (overrides.alignment) changed = true;
     if (!changed) return baseIndex;
 
     // Two xfs are the same style only when ids AND alignment match.
+    const alignmentXml = alignmentXmlFor(mergedAlignment);
     const existing = this.xfDescs.findIndex(
       (xf) =>
         xf.numFmtId === numFmtId &&
         xf.fontId === fontId &&
         xf.fillId === fillId &&
         xf.borderId === borderId &&
-        alignmentEquals(xf.alignmentProps, mergedAlignment),
+        xf.alignmentXml === alignmentXml,
     );
     if (existing !== -1) return existing;
 
@@ -329,7 +303,6 @@ export class StyleRegistry {
       (overrides.fill ? ' applyFill="1"' : '') +
       (overrides.border && Object.keys(overrides.border).length > 0 ? ' applyBorder="1"' : '') +
       (overrides.alignment ? ' applyAlignment="1"' : '');
-    const alignmentXml = this.alignmentXmlFor(mergedAlignment);
     const attrs =
       `<xf numFmtId="${numFmtId}" fontId="${fontId}" fillId="${fillId}" borderId="${borderId}" xfId="0"${apply}`;
     const raw = alignmentXml ? `${attrs}>${alignmentXml}</xf>` : `${attrs}/>`;
@@ -340,6 +313,7 @@ export class StyleRegistry {
       fillId,
       borderId,
       alignmentProps: Object.keys(mergedAlignment ?? {}).length > 0 ? mergedAlignment : undefined,
+      alignmentXml,
       raw,
     });
     return this.xfDescs.length - 1;
@@ -435,8 +409,8 @@ export class StyleRegistry {
       (props.italic ? '<i/>' : '') +
       (props.underline ? '<u/>' : '') +
       (props.size !== undefined ? `<sz val="${props.size}"/>` : '') +
-      (props.color ? `<color rgb="${props.color}"/>` : '') +
-      (props.name ? `<name val="${props.name}"/>` : '');
+      (props.color ? `<color rgb="${escapeXml(props.color)}"/>` : '') +
+      (props.name ? `<name val="${escapeXml(props.name)}"/>` : '');
     if (inner === '') return baseFontId;
     const raw = `<font>${inner}</font>`;
     const existing = this.fontRaws.indexOf(raw);
@@ -447,11 +421,10 @@ export class StyleRegistry {
   }
 
   private fillIdFor(props: FillProps): number {
-    const pattern = props.pattern ?? 'solid';
     const inner =
-      `<patternFill patternType="${pattern}">` +
-      (props.fgColor ? `<fgColor rgb="${props.fgColor}"/>` : '') +
-      (props.bgColor ? `<bgColor rgb="${props.bgColor}"/>` : '<bgColor indexed="64"/>') +
+      `<patternFill patternType="${escapeXml(props.pattern ?? 'solid')}">` +
+      (props.fgColor ? `<fgColor rgb="${escapeXml(props.fgColor)}"/>` : '') +
+      (props.bgColor ? `<bgColor rgb="${escapeXml(props.bgColor)}"/>` : '<bgColor indexed="64"/>') +
       '</patternFill>';
     const raw = `<fill>${inner}</fill>`;
     const existing = this.fillRaws.indexOf(raw);
@@ -466,9 +439,11 @@ export class StyleRegistry {
       const style = edge?.style;
       const argb = edge?.color?.argb;
       if (!style && !argb) return `<${name}/>`;
-      if (!argb) return `<${name} style="${style}"/>`;
-      const color = `<color rgb="${argb}"/>`;
-      return style ? `<${name} style="${style}">${color}</${name}>` : `<${name}>${color}</${name}>`;
+      const color = argb ? `<color rgb="${escapeXml(argb)}"/>` : '';
+      if (!style) return `<${name}>${color}</${name}>`;
+      return color
+        ? `<${name} style="${escapeXml(style)}">${color}</${name}>`
+        : `<${name} style="${escapeXml(style)}"/>`;
     };
     const diagAttrs =
       (props.diagonalUp ? ' diagonalUp="1"' : '') + (props.diagonalDown ? ' diagonalDown="1"' : '');
@@ -484,17 +459,22 @@ export class StyleRegistry {
     this.borderPropsList.push({ ...props });
     return this.borderRaws.length - 1;
   }
+}
 
-  private alignmentXmlFor(props: AlignmentProps | undefined): string {
-    if (!props) return '';
-    let attrs = '';
-    if (props.horizontal !== undefined) attrs += ` horizontal="${escapeXml(props.horizontal)}"`;
-    if (props.vertical !== undefined) attrs += ` vertical="${escapeXml(props.vertical)}"`;
-    if (props.wrapText !== undefined) attrs += ` wrapText="${props.wrapText ? '1' : '0'}"`;
-    if (props.shrinkToFit !== undefined) attrs += ` shrinkToFit="${props.shrinkToFit ? '1' : '0'}"`;
-    if (props.indent !== undefined) attrs += ` indent="${props.indent}"`;
-    if (props.textRotation !== undefined) attrs += ` textRotation="${props.textRotation}"`;
-    if (props.readingOrder !== undefined) attrs += ` readingOrder="${props.readingOrder}"`;
-    return attrs ? `<alignment${attrs}/>` : '';
-  }
+/**
+ * `<alignment/>` child of an `xf`, or '' when the xf carries none. Module-level
+ * (not a method) because the dedup key is built from it, for parsed and added
+ * xfs alike.
+ */
+function alignmentXmlFor(props: AlignmentProps | undefined): string {
+  if (!props) return '';
+  let attrs = '';
+  if (props.horizontal !== undefined) attrs += ` horizontal="${escapeXml(props.horizontal)}"`;
+  if (props.vertical !== undefined) attrs += ` vertical="${escapeXml(props.vertical)}"`;
+  if (props.wrapText !== undefined) attrs += ` wrapText="${props.wrapText ? '1' : '0'}"`;
+  if (props.shrinkToFit !== undefined) attrs += ` shrinkToFit="${props.shrinkToFit ? '1' : '0'}"`;
+  if (props.indent !== undefined) attrs += ` indent="${props.indent}"`;
+  if (props.textRotation !== undefined) attrs += ` textRotation="${props.textRotation}"`;
+  if (props.readingOrder !== undefined) attrs += ` readingOrder="${props.readingOrder}"`;
+  return attrs ? `<alignment${attrs}/>` : '';
 }

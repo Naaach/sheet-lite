@@ -55,6 +55,14 @@ export function removeOverride(xml: string, partName: string): string {
   return existing ? applyEdits(xml, [span(existing, '')]) : xml;
 }
 
+/** Drop the `Default` entry for an extension (e.g. "vml"). */
+export function removeDefault(xml: string, extension: string): string {
+  const existing = descendants(rootOf(xml, 'Types'), 'Default').find(
+    (n) => (n.attrs.Extension ?? '').toLowerCase() === extension.toLowerCase(),
+  );
+  return existing ? applyEdits(xml, [span(existing, '')]) : xml;
+}
+
 // --- relationships -----------------------------------------------------------
 
 export function addRelationship(xml: string, id: string, type: string, target: string): string {

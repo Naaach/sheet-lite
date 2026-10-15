@@ -5,6 +5,10 @@
  * preserving every byte we do not touch.
  */
 
+export { decodeEntities, escapeXml } from './escape';
+
+import { decodeEntities, escapeXml } from './escape';
+
 export interface XmlNode {
   /** '#document' for the synthetic root. */
   name: string;
@@ -141,38 +145,4 @@ export function textOf(node: XmlNode | undefined): string {
   let out = decodeEntities(node.text);
   for (const c of node.children) out += textOf(c);
   return out;
-}
-
-const NAMED: Record<string, string> = {
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '"',
-  apos: "'",
-};
-
-export function decodeEntities(value: string): string {
-  if (!value.includes('&')) return value;
-  return value.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, entity: string) => {
-    const toChar = (codePoint: number): string =>
-      Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
-        ? String.fromCodePoint(codePoint)
-        : '\uFFFD';
-    if (entity.startsWith('#x') || entity.startsWith('#X')) {
-      return toChar(parseInt(entity.slice(2), 16));
-    }
-    if (entity.startsWith('#')) {
-      return toChar(parseInt(entity.slice(1), 10));
-    }
-    return NAMED[entity] ?? whole;
-  });
-}
-
-export function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
 }

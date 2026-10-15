@@ -15,7 +15,10 @@
  * crashing: zip64, encryption (bit 0) and multi-disk archives.
  */
 import { deflateSync, inflateSync } from 'fflate';
-import { ZipSecurityError, ZipUnsupportedError } from './errors';
+import { NotAZipError, SheetLiteError, ZipSecurityError, ZipUnsupportedError } from './errors';
+import { isSafeEntryName, normalizeName } from './names';
+
+export { isSafeEntryName, normalizeName };
 
 /** Maximum number of entries allowed in the archive. */
 export const DEFAULT_MAX_ENTRIES = 10_000;
@@ -49,25 +52,37 @@ const ZIP64_LOCATOR_SIG = 0x0706_4b50;
 const FLAG_ENCRYPTED = 0x0001;
 const FLAG_DATA_DESCRIPTOR = 0x0008;
 
+/**
+ * OLE2 / CFB compound-file magic (the OLE2 signature is stored little-endian).
+ * Legacy `.xls` workbooks and password-protected/encrypted OOXML packages are
+ * this container, not a ZIP.
+ */
+const OLE2_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+
+/**
+ * Reject a legacy OLE2/CFB container with an honest "wrong format" error
+ * instead of letting it die inside the ZIP parser as a corrupt (and, by
+ * implication, suspicious) archive. Only the first 8 bytes are inspected, and
+ * `bytes` may be a short prefix of a file, so this is safe to call with any
+ * leading chunk.
+ */
+export function assertNotCompoundFile(bytes: Uint8Array): void {
+  if (bytes.length < OLE2_MAGIC.length) return;
+  for (let i = 0; i < OLE2_MAGIC.length; i += 1) {
+    if (bytes[i] !== OLE2_MAGIC[i]) return;
+  }
+  throw new SheetLiteError(
+    'Not an XLSX package: OLE2 compound file (legacy .xls or encrypted OOXML); sheet-lite reads .xlsx/.xlsm only',
+    'NOT_XLSX',
+  );
+}
+
 /** Fixed part sizes, in bytes. */
 export const LOCAL_FIXED = 30; // local file header
 export const CENTRAL_FIXED = 46; // central directory record, fixed part
 const EOCD_FIXED = 22;
 
 const EMPTY = new Uint8Array(0);
-
-const UNSAFE = /(^\/)|(^[a-zA-Z]:)|(^|\/)\.\.(\/|$)|(\0)/;
-
-export function normalizeName(name: string): string {
-  return name.replace(/\\/g, '/');
-}
-
-export function isSafeEntryName(name: string): boolean {
-  if (name.length === 0) return false;
-  const normalized = normalizeName(name);
-  if (normalized.endsWith('/')) return false; // directory markers, not needed
-  return !UNSAFE.test(normalized);
-}
 
 function toUint8(input: Uint8Array | ArrayBuffer | ArrayBufferView): Uint8Array {
   if (input instanceof Uint8Array) return input;
@@ -185,7 +200,7 @@ function findEocd(raw: Uint8Array, dv: DataView): number {
     const commentLen = dv.getUint16(pos + 20, true);
     if (pos + EOCD_FIXED + commentLen === raw.length) return pos;
   }
-  throw new ZipSecurityError('Unable to read ZIP archive: end of central directory record not found');
+  throw new NotAZipError('Not a ZIP archive: end of central directory record not found');
 }
 
 /** End-of-central-directory information, validated (multi-disk / zip64 already rejected). */
@@ -459,7 +474,7 @@ export function parseRawZip(
 ): RawZipFile {
   const raw = toUint8(input);
   if (raw.length < EOCD_FIXED) {
-    throw new ZipSecurityError('Unable to read ZIP archive: file is too small to be a ZIP');
+    throw new NotAZipError('Not a ZIP archive: file is too small to be a ZIP');
   }
   const lim: ReadLimits = { ...DEFAULT_LIMITS, ...limits };
   const { records, prefix, comment } = parseStructure(raw, lim);

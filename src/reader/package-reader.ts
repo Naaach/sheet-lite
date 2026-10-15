@@ -150,6 +150,14 @@ function parseSharedStrings(data: Uint8Array, out: Array<string | RichTextValue>
 export function readPackageMeta(store: PartLookup): PackageMeta {
   const workbookData = store.get('xl/workbook.xml');
   if (!workbookData) {
+    // `.xlsb` IS a ZIP, but its workbook part is the binary `xl/workbook.bin`:
+    // name the real cause instead of blaming a "missing" XML part.
+    if (store.get('xl/workbook.bin')) {
+      throw new SheetLiteError(
+        'Not an XLSX package: binary Excel workbook (.xlsb); sheet-lite reads .xlsx/.xlsm only',
+        'NOT_XLSX',
+      );
+    }
     throw new SheetLiteError('Not an XLSX package: missing xl/workbook.xml', 'NOT_XLSX');
   }
 

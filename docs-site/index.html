@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>sheet-lite — read &amp; edit .xlsx without breaking your file</title>
+    <title>sheet-lite 0.5.0 — read, write &amp; edit .xlsx without breaking your file</title>
     <meta
       name="description"
-      content="sheet-lite reads, writes and edits Excel (.xlsx) files without breaking them. Zero transitive dependencies, ESM + CJS, works on raw bytes in Node, browsers and edge runtimes."
+      content="sheet-lite reads, writes and edits Excel (.xlsx) files without breaking them. Patch-only writes, read-only streaming, borders/alignment/rich text, zero transitive dependencies, ESM + CJS, works on raw bytes in Node, browsers and edge runtimes."
     />
     <link rel="stylesheet" href="./styles.css" />
     <script>
@@ -94,6 +94,7 @@
           <ul class="nav__list">
             <li><a class="nav__link" href="#overview">Overview</a></li>
             <li><a class="nav__link" href="#why">Why sheet-lite</a></li>
+            <li><a class="nav__link" href="#features">Features</a></li>
             <li><a class="nav__link" href="#install">Install</a></li>
             <li><a class="nav__link" href="#quickstart">Quickstart</a></li>
           </ul>
@@ -104,7 +105,10 @@
             <li><a class="nav__link" href="#api-workbook">Workbook</a></li>
             <li><a class="nav__link" href="#api-worksheet">Worksheet</a></li>
             <li><a class="nav__link" href="#api-cell">Cell</a></li>
+            <li><a class="nav__link" href="#api-styles">Styles</a></li>
+            <li><a class="nav__link" href="#api-column">Column</a></li>
             <li><a class="nav__link" href="#api-valuetype">Value types</a></li>
+            <li><a class="nav__link" href="#api-stream">Streaming</a></li>
             <li><a class="nav__link" href="#api-errors">Errors</a></li>
           </ul>
 
@@ -115,6 +119,15 @@
             <li><a class="nav__link" href="#ex-add-rows">Add rows</a></li>
             <li><a class="nav__link" href="#ex-dates">Dates</a></li>
             <li><a class="nav__link" href="#ex-formulas">Formulas</a></li>
+            <li><a class="nav__link" href="#ex-borders">Borders &amp; alignment</a></li>
+            <li><a class="nav__link" href="#ex-richtext">Rich text</a></li>
+            <li><a class="nav__link" href="#ex-structure">Sheet structure</a></li>
+            <li><a class="nav__link" href="#ex-streaming">Streaming reads</a></li>
+          </ul>
+
+          <p class="nav__group-title">Scope</p>
+          <ul class="nav__list">
+            <li><a class="nav__link" href="#limitations">Limitations</a></li>
           </ul>
         </nav>
       </aside>
@@ -122,16 +135,16 @@
       <main class="content" id="content">
         <!-- ============================ HERO ============================ -->
         <section class="hero" id="overview">
-          <p class="eyebrow">TypeScript · ESM + CJS · zero transitive dependencies</p>
+          <p class="eyebrow">TypeScript · ESM + CJS · zero transitive dependencies · v0.5.0</p>
           <h1 class="hero__title">
             Read, write and <em>edit</em> Excel.<br />
             Without breaking your file.
           </h1>
           <p class="hero__lead">
-            When you open an <code>.xlsx</code>, change a value and save, most libraries
-            rebuild the whole package and silently drop formatting, data validations,
-            conditional formatting or images. <strong>sheet-lite</strong> patches only
-            what changed and carries everything else over untouched.
+            Libraries that rebuild a workbook from their own model lose whatever
+            that model doesn't cover — charts, pivot tables, images, comments,
+            conditional formatting. <strong>sheet-lite</strong> patches only what
+            changed and carries every other ZIP part over byte-for-byte.
           </p>
 
           <div class="hero__actions">
@@ -141,16 +154,20 @@
 
           <ul class="hero__facts">
             <li><strong>~149 ms</strong> to read a 5000 × 8 sheet</li>
-            <li><strong>~23.9 kB</strong> gzip, including deps</li>
+            <li><strong>~33 kB</strong> gzip, including deps</li>
             <li><strong>0</strong> transitive dependencies</li>
             <li><strong>fflate</strong> is the only dependency</li>
+            <li>Read-only <strong>streaming</strong> reads via <code>sheet-lite/stream</code></li>
+            <li>Incremental <strong>bounded-memory writes</strong> via <code>sheet-lite/write</code></li>
+            <li><strong>10.2 MB</strong> live heap streaming a 100 000 × 8 sheet</li>
           </ul>
 
           <div class="callout">
             <p>
               The public promise is <strong>“opens without repair.”</strong> Untouched
               parts of the file are preserved; when nothing changes, the original bytes
-              are returned verbatim.
+              are returned verbatim. Verified on our side with a real-file corpus and a
+              LibreOffice gate in CI — LibreOffice is not Excel.
             </p>
           </div>
         </section>
@@ -159,9 +176,11 @@
         <section class="section" id="why">
           <h2>Why sheet-lite</h2>
           <p class="section__lead">
-            The most-downloaded library in this space can destroy your data when you
-            read and re-write an existing workbook. sheet-lite is built around a single
-            principle: <strong>patch-only + copy-verbatim</strong>.
+            The two most-downloaded spreadsheet packages on npm rebuild a workbook from
+            their own model, so whatever that model does not cover is gone; one of them
+            is frozen, with high-severity advisories that have no fix available.
+            sheet-lite is built around a single principle:
+            <strong>patch-only + copy-verbatim</strong>.
           </p>
 
           <div class="grid grid--2">
@@ -172,6 +191,7 @@
                 <li>Data validations, conditional formatting, merges and images stay intact.</li>
                 <li>Styles and number formats are carried over per cell.</li>
                 <li>A no-op edit returns the original bytes exactly.</li>
+                <li>Charts, pivot tables, images and comments are <strong>preserved, not created</strong>.</li>
                 <li>Security by design: path-traversal, entry-count, size and compression-ratio limits.</li>
               </ul>
             </article>
@@ -179,12 +199,24 @@
             <article class="card">
               <h3>Lightweight by construction</h3>
               <ul class="check-list">
-                <li>Only <code>fflate</code> — the ZIP + DEFLATE layer, ~8 kB, <strong>0 transitive deps</strong>.</li>
+                <li>Only <code>fflate</code> — the ZIP + DEFLATE layer, 11.8 kB gzip, <strong>0 transitive deps</strong>.</li>
                 <li>Runs on raw bytes: Node, browsers and edge runtimes.</li>
                 <li>TypeScript-first, shipped as both ESM and CJS.</li>
+                <li>Streaming lives behind its own entry point, so you only pay for it if you import it.</li>
                 <li>Filesystem access is lazy (<code>node:fs/promises</code>), so the core stays runtime-agnostic.</li>
               </ul>
             </article>
+          </div>
+
+          <div class="callout callout--muted">
+            <p>
+              The preservation guarantee is verified on <strong>our</strong> side: 136
+              tests across 17 files, a corpus of <strong>11</strong> real
+              <code>.xlsx</code>/<code>.xlsm</code> files (read, no-op byte-identity and
+              a single-cell edit that leaves every other part identical), and a
+              LibreOffice gate in CI that requires every edited corpus file to re-open
+              without repair. LibreOffice is not Excel.
+            </p>
           </div>
 
           <h3 class="subhead">Benchmark</h3>
@@ -208,7 +240,7 @@
                 <tr class="is-highlight">
                   <th scope="row">sheet-lite</th>
                   <td><strong>149 ms</strong></td>
-                  <td><strong>~23.9 kB</strong></td>
+                  <td><strong>~33 kB</strong></td>
                   <td><strong>0</strong></td>
                 </tr>
                 <tr>
@@ -227,11 +259,11 @@
             </table>
           </div>
 
-          <div class="bars" role="img" aria-label="Package size comparison in gzip kilobytes: sheet-lite about 23.9, ExcelJS 249.9, SheetJS 136.4">
+          <div class="bars" role="img" aria-label="Package size comparison in gzip kilobytes: sheet-lite about 33, ExcelJS 249.9, SheetJS 136.4">
             <div class="bars__row">
               <span class="bars__label">sheet-lite</span>
-              <span class="bars__track"><span class="bars__fill bars__fill--accent" style="width: 10%"></span></span>
-              <span class="bars__value">~23.9 kB</span>
+              <span class="bars__track"><span class="bars__fill bars__fill--accent" style="width: 13%"></span></span>
+              <span class="bars__value">~33 kB</span>
             </div>
             <div class="bars__row">
               <span class="bars__label">ExcelJS</span>
@@ -245,10 +277,114 @@
             </div>
           </div>
           <p class="note">
-            sheet-lite's ~23.9 kB is <strong>12.1 kB</strong> of library code plus
-            <strong>11.8 kB</strong> for fflate. Reproduce it yourself with
+            sheet-lite's ~33 kB is <strong>21 kB</strong> of library code (the main
+            entry, gzip) plus <strong>11.8 kB</strong> for fflate. Importing
+            <code>sheet-lite/stream</code> adds a lazy chunk of <strong>~3 kB</strong>
+            gzip and <code>sheet-lite/write</code> a lazy chunk of <strong>~7 kB</strong>
+            gzip, both loaded on demand and only then. Reproduce the read numbers with
             <code>pnpm bench</code>.
           </p>
+
+          <h3 class="subhead">Memory: streaming vs eager</h3>
+          <p>
+            A 100 000 × 8 worksheet read with <code>StreamingWorkbook</code> versus
+            <code>Workbook.read</code> (<code>pnpm bench:stream</code>, 800 000 cells,
+            fresh process per phase):
+          </p>
+
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th scope="col">Metric</th>
+                  <th scope="col">Eager (<code>Workbook.read</code>)</th>
+                  <th scope="col">Streaming (<code>sheet-lite/stream</code>)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Live heap after GC</th>
+                  <td>673 MB</td>
+                  <td><strong>10.2 MB</strong></td>
+                </tr>
+                <tr>
+                  <th scope="row">Read / walk time</th>
+                  <td>2.87 s</td>
+                  <td>3.21 s</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note">
+            Streaming reads a bounded set of small package parts plus one row at a
+            time — ~66× less live heap here. It is <strong>read-only</strong>: editing
+            needs the eager <code>Workbook</code>. Published sizes come from
+            bundlephobia; read times from <code>scripts/bench.mjs</code>. All figures
+            are medians on one machine (Node 24, Windows), ±10–15% cross-run variance.
+          </p>
+        </section>
+
+        <!-- ============================ FEATURES ============================ -->
+        <section class="section" id="features">
+          <h2>What 0.5.0 actually ships</h2>
+          <p class="section__lead">
+            Everything below is in the published <code>0.5.0</code> package. Anything
+            that is <em>not</em> there is listed under
+            <a href="#limitations">Limitations</a>.
+          </p>
+
+          <div class="grid grid--2">
+            <article class="card">
+              <h3>Read &amp; edit</h3>
+              <ul class="check-list">
+                <li><code>Workbook.read()</code> / <code>readFile()</code> / <code>toBuffer()</code> / <code>writeFile()</code>, plus <code>readBlob()</code>, <code>toBlob()</code> and <code>download()</code>.</li>
+                <li>Values: numbers, strings, booleans, dates (1900 &amp; 1904), errors, formulas with their cached result, inline and shared strings.</li>
+                <li>Patch-only writes — only changed cells are re-serialized; a no-op edit returns the original bytes verbatim.</li>
+                <li>Merges: <code>mergeCells()</code> / <code>unmergeCells()</code>.</li>
+              </ul>
+            </article>
+
+            <article class="card">
+              <h3>Sheet structure</h3>
+              <ul class="check-list">
+                <li><code>wb.addWorksheet(name, { views? })</code> and <code>wb.removeWorksheet(nameOrId)</code>, with full OPC registration.</li>
+                <li>Works on files that have no <code>styles.xml</code> or no <code>sharedStrings.xml</code>.</li>
+                <li>Columns: <code>ws.getColumn(n | 'A').width</code> / <code>.hidden</code> — existing <code>&lt;cols&gt;</code> ranges are split, never destroyed.</li>
+                <li>Rows: <code>row.height</code>, written as a surgical <code>&lt;row ht="…"&gt;</code> patch.</li>
+                <li>Frozen panes: ExcelJS-style <code>ws.views = [{ state: 'frozen', xSplit, ySplit }]</code>, read back on re-open.</li>
+              </ul>
+            </article>
+
+            <article class="card">
+              <h3>Styles</h3>
+              <ul class="check-list">
+                <li><code>cell.numFmt</code>, <code>cell.font</code> (bold, italic, underline, size, name, ARGB color) and <code>cell.fill</code>.</li>
+                <li><code>cell.border</code> with all <strong>13 OOXML line styles</strong>, deduped in <code>styles.xml</code> and merged side-by-side over a cell's existing border.</li>
+                <li><code>cell.alignment</code>: horizontal, vertical, wrapText, shrinkToFit, indent, textRotation, readingOrder.</li>
+                <li>Rich text <strong>read and write</strong>: <code>{ richText: [{ text, font? }, …] }</code> from inline and shared strings, written as inline <code>&lt;r&gt;</code> runs.</li>
+              </ul>
+            </article>
+
+            <article class="card">
+              <h3>Streaming &amp; runtimes</h3>
+              <ul class="check-list">
+                <li>Read-only streaming reads from <code>sheet-lite/stream</code>, or lazily via <code>Workbook.openStream()</code>.</li>
+                <li>Incremental, bounded-memory writes from <code>sheet-lite/write</code>, or lazily via <code>Workbook.create()</code> (on <code>main</code>).</li>
+                <li>Bounded memory: a 100 000 × 8 sheet in 10.2 MB of live heap instead of 673 MB.</li>
+                <li>Identical values and types to the eager reader — same hardened ZIP layer, same rejection rules.</li>
+                <li>Browser and edge adapters: <code>readBlob()</code>, <code>toBlob()</code>, <code>download()</code>.</li>
+              </ul>
+            </article>
+          </div>
+
+          <div class="callout callout--muted">
+            <p>
+              Not created, only preserved: charts, pivot tables, images, comments,
+              macros and conditional formatting. New worksheets are <strong>plain</strong>
+              — values and optional frozen panes only. See
+              <a href="#limitations">Limitations</a> for the full honest list.
+            </p>
+          </div>
         </section>
 
         <!-- ============================ INSTALL ============================ -->
@@ -262,7 +398,7 @@
             <div class="code-block__header">
               <span class="code-block__lang">bash</span>
             </div>
-            <pre><code>npm install sheet-lite</code></pre>
+            <pre><code>npm install sheet-lite@0.5.0</code></pre>
           </div>
 
           <p>Or with your package manager of choice:</p>
@@ -279,7 +415,10 @@ yarn add sheet-lite</code></pre>
             <p>
               Requires <strong>Node&nbsp;≥&nbsp;18</strong>. In browsers and edge
               runtimes, import the ESM build and work with raw bytes — no filesystem
-              access needed.
+              access needed. Streaming reads (<code>sheet-lite/stream</code>) and the
+              incremental writer (<code>sheet-lite/write</code>) ship as subpath entry
+              points, so the main bundle stays small; both are bundled with the package,
+              so there is nothing extra to install.
             </p>
           </div>
         </section>
@@ -307,10 +446,17 @@ console.log(ws.getCell('A1').value, ws.getCell('A1').type);
 ws.getCell('B2').value = 1234.56;
 ws.getCell('B3').value = new Date();
 ws.getCell('B4').value = { formula: 'SUM(B2:B3)', result: 1234.56 };
+ws.getCell('B2').numFmt = '#,##0.00';
+ws.getCell('A1').font = { bold: true };
 ws.addRow(['North', 128]);
 
+// Structure: columns, row heights, frozen panes
+ws.getColumn('A').width = 24;
+ws.getRow(1).height = 22;
+ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 1 }];
+
 await wb.writeFile('./report-edited.xlsx');
-// data validations, conditional formatting, merges and other parts stay intact</code></pre>
+// data validations, conditional formatting, images and other parts stay intact</code></pre>
           </div>
 
           <div class="callout callout--muted">
@@ -320,7 +466,8 @@ await wb.writeFile('./report-edited.xlsx');
               <code>Uint8Array</code>, <code>ArrayBuffer</code> or any
               <code>ArrayBufferView</code>. <code>readFile()</code> and
               <code>writeFile()</code> are the only filesystem-bound helpers and are
-              Node-only.
+              Node-only. For files too large to hold in memory, see
+              <a href="#ex-streaming">streaming reads</a>.
             </p>
           </div>
         </section>
@@ -330,7 +477,10 @@ await wb.writeFile('./report-edited.xlsx');
           <h2>API reference</h2>
           <p class="section__lead">
             The public surface is small and synchronous where it can be. Everything
-            below is exported from the package root.
+            below is exported from the package root except
+            <a href="#api-stream">streaming</a> (<code>sheet-lite/stream</code>) and the
+            <a href="#ex-writing">incremental writer</a> (<code>sheet-lite/write</code>),
+            which live behind their own subpath entry points.
           </p>
 
           <div class="code-block">
@@ -342,11 +492,21 @@ await wb.writeFile('./report-edited.xlsx');
   Worksheet,
   Row,
   Cell,
+  Column,
   ValueType,
   typeOf,
+  serialToDate,
+  dateToSerial,
   SheetLiteError,
   ZipSecurityError,
-} from 'sheet-lite';</code></pre>
+  ZipUnsupportedError,
+} from 'sheet-lite';
+
+// Read-only streaming, in its own entry point:
+import { StreamingWorkbook } from 'sheet-lite/stream';
+
+// Incremental, bounded-memory creation (on `main`), in its own entry point:
+import { WorkbookWriter } from 'sheet-lite/write';</code></pre>
           </div>
 
           <!-- Workbook -->
@@ -377,6 +537,21 @@ await wb.writeFile('./report-edited.xlsx');
                     <td>Read from a filesystem path. <em>Node only.</em></td>
                   </tr>
                   <tr>
+                    <td><code>readBlob</code></td>
+                    <td><code>static readBlob(blob: Blob): Promise&lt;Workbook&gt;</code></td>
+                    <td>Read from a <code>Blob</code>/<code>File</code> — browsers, Deno, Workers (also Node ≥ 18).</td>
+                  </tr>
+                  <tr>
+                    <td><code>openStream</code></td>
+                    <td><code>static openStream(input: StreamInput, limits?: Partial&lt;ReadLimits&gt;): Promise&lt;StreamingWorkbook&gt;</code></td>
+                    <td>Lazy alias for <code>StreamingWorkbook.open</code> — loads the streaming chunk on demand. <em>Read-only.</em></td>
+                  </tr>
+                  <tr>
+                    <td><code>create</code></td>
+                    <td><code>static create(options?: WorkbookWriterOptions): Promise&lt;WorkbookWriter&gt;</code></td>
+                    <td>Lazy alias for <code>WorkbookWriter.create</code> (<code>sheet-lite/write</code>) — build a work&shy;book from scratch with bounded memory. <em>On <code>main</code>.</em></td>
+                  </tr>
+                  <tr>
                     <td><code>worksheets</code></td>
                     <td><code>get worksheets: Worksheet[]</code></td>
                     <td>All sheets, in package order.</td>
@@ -392,6 +567,16 @@ await wb.writeFile('./report-edited.xlsx');
                     <td>Find a sheet by name or numeric id.</td>
                   </tr>
                   <tr>
+                    <td><code>addWorksheet</code></td>
+                    <td><code>addWorksheet(name: string, options?: { views?: SheetViewProps[] }): Worksheet</code></td>
+                    <td>Add an empty sheet with full OPC registration. Throws <code>SHEET_EXISTS</code> / <code>BAD_SHEET_NAME</code>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>removeWorksheet</code></td>
+                    <td><code>removeWorksheet(nameOrId: string | number, options?: { prune?: boolean }): void</code></td>
+                    <td>Remove a sheet, its rels and its registration (and, by default on <code>main</code>, the parts only it owned). Throws <code>SHEET_NOT_FOUND</code> / <code>LAST_SHEET</code>.</td>
+                  </tr>
+                  <tr>
                     <td><code>toBuffer</code></td>
                     <td><code>toBuffer(): Uint8Array</code></td>
                     <td>Serialize. If nothing changed, the original bytes are returned verbatim.</td>
@@ -402,9 +587,24 @@ await wb.writeFile('./report-edited.xlsx');
                     <td>Write to a filesystem path. <em>Node only.</em></td>
                   </tr>
                   <tr>
+                    <td><code>toBlob</code></td>
+                    <td><code>toBlob(): Blob</code></td>
+                    <td>Serialize to a <code>Blob</code> — browser, Deno, Workers, Node ≥ 18.</td>
+                  </tr>
+                  <tr>
+                    <td><code>download</code></td>
+                    <td><code>download(filename: string): void</code></td>
+                    <td>Trigger a client-side download. <em>Browser only</em>; throws <code>ENV_UNSUPPORTED</code> elsewhere.</td>
+                  </tr>
+                  <tr>
                     <td><code>metadata</code></td>
                     <td><code>get metadata: PackageMeta</code></td>
-                    <td>Read-only package metadata (date system, shared strings, styles).</td>
+                    <td>Read-only package metadata (date system, sheet refs, shared strings, styles).</td>
+                  </tr>
+                  <tr>
+                    <td><code>contentTypes</code></td>
+                    <td><code>contentTypes(): ContentTypes</code></td>
+                    <td>Parsed <code>[Content_Types].xml</code> (defaults and overrides).</td>
                   </tr>
                 </tbody>
               </table>
@@ -415,8 +615,9 @@ await wb.writeFile('./report-edited.xlsx');
           <article class="api" id="api-worksheet">
             <h3><span class="api__kind api__kind--class">class</span> Worksheet</h3>
             <p>
-              A single sheet. Reading values and patching cells/rows are supported;
-              everything else in the sheet XML is preserved.
+              A single sheet. Reading values, patching cells/rows/columns/styles and
+              freezing panes are supported; everything else in the sheet XML is
+              preserved.
             </p>
 
             <div class="table-wrap">
@@ -438,6 +639,11 @@ await wb.writeFile('./report-edited.xlsx');
                     <td><code>id</code></td>
                     <td><code>readonly id: number</code></td>
                     <td>Numeric sheet id from the package.</td>
+                  </tr>
+                  <tr>
+                    <td><code>partName</code></td>
+                    <td><code>readonly partName: string</code></td>
+                    <td>Package key of the sheet part, e.g. <code>"xl/worksheets/sheet1.xml"</code>.</td>
                   </tr>
                   <tr>
                     <td><code>rowCount</code></td>
@@ -469,6 +675,26 @@ await wb.writeFile('./report-edited.xlsx');
                     <td><code>addRow(values: CellValue[]): Row</code></td>
                     <td>Append a row starting at column A. Returns the created <code>Row</code>.</td>
                   </tr>
+                  <tr>
+                    <td><code>getColumn</code></td>
+                    <td><code>getColumn(col: number | string): Column</code></td>
+                    <td>Get a column by 1-based number or letter. Throws <code>BAD_COLUMN</code> outside 1–16384 / A–XFD.</td>
+                  </tr>
+                  <tr>
+                    <td><code>views</code></td>
+                    <td><code>get/set views: SheetViewProps[]</code></td>
+                    <td>ExcelJS-style frozen panes, e.g. <code>[{ state: 'frozen', xSplit: 2, ySplit: 3 }]</code>. <code>[]</code> or <code>{ state: 'normal' }</code> unfreezes.</td>
+                  </tr>
+                  <tr>
+                    <td><code>mergeCells</code></td>
+                    <td><code>mergeCells(ref: string): void</code></td>
+                    <td>Merge a range, e.g. <code>"A1:C1"</code>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>unmergeCells</code></td>
+                    <td><code>unmergeCells(ref: string): void</code></td>
+                    <td>Remove a merge by its range reference.</td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -490,9 +716,19 @@ await wb.writeFile('./report-edited.xlsx');
                     <td>1-based row number.</td>
                   </tr>
                   <tr>
+                    <td><code>worksheet</code></td>
+                    <td><code>readonly worksheet: Worksheet</code></td>
+                    <td>Owning sheet.</td>
+                  </tr>
+                  <tr>
                     <td><code>cells</code></td>
                     <td><code>readonly cells: Cell[]</code></td>
                     <td>Populated cells, sorted by column.</td>
+                  </tr>
+                  <tr>
+                    <td><code>height</code></td>
+                    <td><code>get/set height: number | undefined</code></td>
+                    <td>Row height in points. Only the row's opening tag is patched; <code>undefined</code> clears it. Throws <code>BAD_ROW_HEIGHT</code>.</td>
                   </tr>
                   <tr>
                     <td><code>getCell</code></td>
@@ -514,7 +750,8 @@ await wb.writeFile('./report-edited.xlsx');
             <h3><span class="api__kind api__kind--class">class</span> Cell</h3>
             <p>
               A reference to a single cell. <code>value</code> is both readable and
-              writable; writing registers a surgical patch.
+              writable; writing registers a surgical patch. The style properties are
+              readable and writable too, and merge over what the cell already carries.
             </p>
 
             <div class="table-wrap">
@@ -552,12 +789,139 @@ await wb.writeFile('./report-edited.xlsx');
                     <td><code>get type: ValueTypeName</code></td>
                     <td>
                       <code>'Null' | 'Number' | 'String' | 'Date' | 'Boolean' | 'Formula' | 'Error'</code>.
+                      Rich-text values report as <code>'String'</code>.
                     </td>
                   </tr>
                   <tr>
-                    <td><code>model</code></td>
-                    <td><code>get model: { address; type; value }</code></td>
-                    <td>Convenience snapshot of the cell.</td>
+                    <td><code>numFmt</code></td>
+                    <td><code>get/set numFmt: string</code></td>
+                    <td>Number format code (<code>'General'</code> when none is set).</td>
+                  </tr>
+                  <tr>
+                    <td><code>font</code></td>
+                    <td><code>get/set font: FontProps</code></td>
+                    <td><code>{ bold, italic, underline, size, name, color }</code> — <code>color</code> is ARGB.</td>
+                  </tr>
+                  <tr>
+                    <td><code>fill</code></td>
+                    <td><code>get/set fill: FillProps</code></td>
+                    <td><code>{ type, pattern, fgColor, bgColor }</code>, e.g. <code>{ type: 'pattern', pattern: 'solid', fgColor: 'FFFFFF00' }</code>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>border</code></td>
+                    <td><code>get/set border: BorderProps</code></td>
+                    <td>Per-side borders; setting one side merges over the existing border. See <a href="#api-styles">Styles</a>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>alignment</code></td>
+                    <td><code>get/set alignment: AlignmentProps</code></td>
+                    <td>Horizontal/vertical alignment, wrap, indent, rotation. See <a href="#api-styles">Styles</a>.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <!-- Styles -->
+          <article class="api" id="api-styles">
+            <h3><span class="api__kind api__kind--type">type</span> Styles</h3>
+            <p>
+              Style assignments are ExcelJS-compatible shapes. They are deduplicated in
+              <code>xl/styles.xml</code> — an identical style the file already carries is
+              reused instead of written twice — and a style edit that resolves back to the
+              cell's existing formatting is a byte-level no-op.
+            </p>
+
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>interface BorderSideProps {
+  style?: BorderStyleName;          // one of the 13 OOXML line styles
+  color?: { argb?: string };        // ARGB, e.g. 'FF00B0F0'
+}
+
+interface BorderProps {
+  top?: BorderSideProps;
+  bottom?: BorderSideProps;
+  left?: BorderSideProps;
+  right?: BorderSideProps;
+  diagonal?: BorderSideProps;
+  diagonalUp?: boolean;
+  diagonalDown?: boolean;
+}
+
+interface AlignmentProps {
+  horizontal?: 'left' | 'center' | 'right' | 'fill' | 'justify' | 'centerContinuous' | 'distributed';
+  vertical?: 'top' | 'center' | 'bottom' | 'justify' | 'distributed';
+  wrapText?: boolean;
+  shrinkToFit?: boolean;
+  indent?: number;
+  textRotation?: number;            // 0-90, 91-180, 255 = vertical
+  readingOrder?: 0 | 1 | 2;
+}</code></pre>
+            </div>
+
+            <p>
+              All 13 OOXML line styles are supported:
+              <code>thin</code>, <code>medium</code>, <code>thick</code>,
+              <code>dashed</code>, <code>dotted</code>, <code>double</code>,
+              <code>hair</code>, <code>mediumDashed</code>, <code>dashDot</code>,
+              <code>slantDashDot</code>, <code>mediumDashDot</code>,
+              <code>dashDotDot</code>, <code>mediumDashDotDot</code>.
+            </p>
+
+            <div class="callout callout--muted">
+              <p>
+                Border colors are <strong>ARGB only</strong>. Theme and indexed colors on
+                pre-existing borders are preserved in the file but not exposed through
+                the API. Rich-text run fonts model bold, italic, underline, size, color
+                and name; other run properties are not modeled. Alignment uses the
+                OOXML vocabulary — ExcelJS reads our <code>vertical: 'center'</code> back
+                as its <code>'middle'</code> alias.
+              </p>
+            </div>
+          </article>
+
+          <!-- Column -->
+          <article class="api" id="api-column">
+            <h3><span class="api__kind api__kind--class">class</span> Column</h3>
+            <p>
+              Returned by <code>worksheet.getColumn()</code>. Width and hidden state
+              persist through surgical <code>&lt;cols&gt;</code> edits: existing
+              <code>&lt;col&gt;</code> ranges are split, never destroyed, so other columns
+              keep their attributes.
+            </p>
+
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col">Member</th>
+                    <th scope="col">Signature</th>
+                    <th scope="col">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>number</code></td>
+                    <td><code>readonly number: number</code></td>
+                    <td>1-based column number (1 = A).</td>
+                  </tr>
+                  <tr>
+                    <td><code>letter</code></td>
+                    <td><code>get letter: string</code></td>
+                    <td>Column letter, e.g. <code>"A"</code>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>width</code></td>
+                    <td><code>get/set width: number | undefined</code></td>
+                    <td>Column width; setting it implies <code>customWidth</code>. <code>undefined</code> clears it.</td>
+                  </tr>
+                  <tr>
+                    <td><code>hidden</code></td>
+                    <td><code>get/set hidden: boolean</code></td>
+                    <td>Hide or unhide the column.</td>
                   </tr>
                 </tbody>
               </table>
@@ -575,14 +939,18 @@ await wb.writeFile('./report-edited.xlsx');
               <div class="code-block__header">
                 <span class="code-block__lang">ts</span>
               </div>
-              <pre><code>type CellValue =
+              <pre><code>type RichTextRun = { text: string; font?: FontProps };
+type RichTextValue = { richText: RichTextRun[] };
+
+type CellValue =
   | null
   | number
   | string
   | boolean
   | Date
   | { error: string }
-  | { formula: string; result?: CellValue };</code></pre>
+  | { formula: string; result?: CellValue }
+  | { richText: RichTextRun[] };</code></pre>
             </div>
 
             <p>
@@ -614,9 +982,209 @@ await wb.writeFile('./report-edited.xlsx');
 
             <p class="note">
               Values are read from strings, numbers, booleans, dates (both the 1900 and
-              1904 systems), formulas (with their cached result), and inline/shared
-              strings.
+              1904 systems), formulas (with their cached result), errors, and
+              inline/shared strings. A string carrying formatting runs is returned as
+              <code>{ richText }</code> — the three readers (inline strings, the
+              incremental shared-strings parser and the streaming reader) share one run
+              collector, so they never disagree. To get the flattened text back, use
+              <code>value.richText.map((run) =&gt; run.text).join('')</code>.
             </p>
+          </article>
+
+          <!-- Streaming -->
+          <article class="api" id="api-stream">
+            <h3><span class="api__kind api__kind--class">class</span> StreamingWorkbook</h3>
+            <p>
+              Read-only, bounded-memory reads from
+              <code>sheet-lite/stream</code>. It reads the small package parts up front
+              and then walks worksheet rows one at a time, so a multi-gigabyte file
+              reads with a few MB of live heap. Values and types are identical to the
+              eager reader.
+            </p>
+
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { StreamingWorkbook } from 'sheet-lite/stream';
+
+const wb = await StreamingWorkbook.open('./huge.xlsx'); // Node file path
+// ...or an in-memory buffer: StreamingWorkbook.open(bytes)
+
+for (const sheet of wb.sheets) console.log(sheet.name, sheet.sheetId);
+
+for await (const row of wb.getSheet('Data')!.readRows()) {
+  console.log(row.number); // 1, 2, 3, …
+  for (const cell of row.cells) console.log(cell.ref, cell.value, cell.type);
+}
+
+await wb.close();</code></pre>
+            </div>
+
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col">Member</th>
+                    <th scope="col">Signature</th>
+                    <th scope="col">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>open</code></td>
+                    <td><code>static open(input: StreamInput, limits?: Partial&lt;ReadLimits&gt;): Promise&lt;StreamingWorkbook&gt;</code></td>
+                    <td>Open from a Node file path, or a <code>Uint8Array</code>/<code>ArrayBuffer</code>/view. A file path is never fully loaded into memory.</td>
+                  </tr>
+                  <tr>
+                    <td><code>sheets</code></td>
+                    <td><code>get sheets: SheetRef[]</code></td>
+                    <td>Sheet list (<code>name</code>, <code>sheetId</code>, <code>rId</code>, <code>partName</code>).</td>
+                  </tr>
+                  <tr>
+                    <td><code>sheetNames</code></td>
+                    <td><code>get sheetNames: string[]</code></td>
+                    <td>Sheet names in package order.</td>
+                  </tr>
+                  <tr>
+                    <td><code>getSheet</code></td>
+                    <td><code>getSheet(nameOrId: string | number): StreamingSheet | undefined</code></td>
+                    <td>Find a sheet by name or numeric id.</td>
+                  </tr>
+                  <tr>
+                    <td><code>readRows</code></td>
+                    <td><code>readRows(sheet: string | number): AsyncGenerator&lt;StreamRow&gt;</code></td>
+                    <td>Walk a sheet's rows. Each call re-reads the sheet part; rows are produced lazily.</td>
+                  </tr>
+                  <tr>
+                    <td><code>close</code></td>
+                    <td><code>close(): Promise&lt;void&gt;</code></td>
+                    <td>Close the file handle (file inputs only).</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h4 class="subhead subhead--small"><code>StreamingSheet</code> &amp; row shape</h4>
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col">Member</th>
+                    <th scope="col">Signature</th>
+                    <th scope="col">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>name</code> / <code>id</code> / <code>partName</code></td>
+                    <td><code>readonly name: string</code><br /><code>readonly id: number</code><br /><code>readonly partName: string</code></td>
+                    <td>Sheet identity.</td>
+                  </tr>
+                  <tr>
+                    <td><code>readRows</code></td>
+                    <td><code>readRows(): AsyncGenerator&lt;StreamRow&gt;</code></td>
+                    <td>Iterate this sheet's rows lazily.</td>
+                  </tr>
+                  <tr>
+                    <td><code>StreamRow</code></td>
+                    <td><code>{ number: number; cells: StreamCell[] }</code></td>
+                    <td>Row number plus its cells.</td>
+                  </tr>
+                  <tr>
+                    <td><code>StreamCell</code></td>
+                    <td><code>{ ref; row; col; value; type }</code></td>
+                    <td>Same <code>CellValue</code>/<code>ValueTypeName</code> model as the eager reader.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout callout--muted">
+              <p>
+                Streaming mode is deliberately <strong>read-only</strong>: there is no
+                patch or write path, so editing still needs the eager
+                <code>Workbook</code>. <code>ReadableStream</code> input is not supported
+                (ZIP has no seeking and the EOCD lives at the end) — pass a file path or
+                a buffer. <code>sharedStrings.xml</code> is parsed incrementally but the
+                string table itself stays in memory, so sheets with millions of
+                <em>unique</em> strings are bounded by that table rather than by the row
+                count.
+              </p>
+            </div>
+          </article>
+
+          <!-- Writer -->
+          <article class="api" id="api-write">
+            <h3><span class="api__kind api__kind--class">class</span> WorkbookWriter</h3>
+            <p>
+              Incremental, bounded-memory creation from <code>sheet-lite/write</code>
+              (on <code>main</code>). Rows are serialized, deflated and streamed to the
+              target as they are added, so a million-row sheet never sits in memory. Reach
+              it lazily from the root with <code>Workbook.create()</code>.
+            </p>
+
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { WorkbookWriter } from 'sheet-lite/write';
+
+const wb = await WorkbookWriter.create({ file: './huge.xlsx' });
+const ws = wb.addWorksheet('Data', { views: [{ state: 'frozen', ySplit: 1 }] });
+ws.getColumn('A').width = 20;
+ws.addRow(['name', 42, new Date()]).font = { bold: true };
+await wb.commit(); // …or: const bytes = await wb.toBuffer()</code></pre>
+            </div>
+
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col">Member</th>
+                    <th scope="col">Signature</th>
+                    <th scope="col">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>create</code></td>
+                    <td><code>static create(options?: WorkbookWriterOptions): Promise&lt;WorkbookWriter&gt;</code></td>
+                    <td><code>{ file }</code> streams atomically to a Node file; <code>{ sink }</code> to any <code>{ write(chunk) }</code>; no target buffers for <code>toBuffer()</code>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>addWorksheet</code></td>
+                    <td><code>addWorksheet(name: string, options?: { views?: SheetViewProps[] }): WriteWorksheet</code></td>
+                    <td>Add a sheet. Rows must be appended one sheet at a time (<code>SHEET_INTERLEAVED</code>).</td>
+                  </tr>
+                  <tr>
+                    <td><code>commit</code></td>
+                    <td><code>commit(): Promise&lt;void&gt;</code></td>
+                    <td>Finish the archive (writes styles, workbook, rels, content types) and close the target. Idempotent.</td>
+                  </tr>
+                  <tr>
+                    <td><code>abort</code></td>
+                    <td><code>abort(): void</code></td>
+                    <td>Give up: remove the scratch file, leave the destination untouched. Also runs on <code>await using</code> scope exit.</td>
+                  </tr>
+                  <tr>
+                    <td><code>toBuffer</code> / <code>writeFile</code></td>
+                    <td><code>toBuffer(): Promise&lt;Uint8Array&gt;</code><br /><code>writeFile(path): Promise&lt;void&gt;</code></td>
+                    <td>Buffered target only; a file/sink target throws <code>BAD_TARGET</code>.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout callout--muted">
+              <p>
+                The writer <strong>creates</strong> workbooks only — it never edits an
+                existing file, so it makes no preservation claim. Strings are written inline
+                (<code>t="inlineStr"</code>), trading file size for a hard memory bound.
+                Values, styles and the emitted <code>&lt;c&gt;</code> markup match the eager
+                writer by construction (they share the serializer).
+              </p>
+            </div>
           </article>
 
           <!-- Errors -->
@@ -635,13 +1203,47 @@ await wb.writeFile('./report-edited.xlsx');
                   <tr>
                     <td><code>SheetLiteError</code></td>
                     <td>varies, e.g. <code>'NOT_XLSX'</code></td>
-                    <td>The input isn't a valid XLSX package (every error carries a stable machine-readable code).</td>
+                    <td>The base class. Every error carries a stable machine-readable <code>code</code>.</td>
                   </tr>
                   <tr>
                     <td><code>ZipSecurityError</code></td>
                     <td><code>'ZIP_SECURITY'</code></td>
                     <td>The archive violates a safety limit: path traversal, too many entries, oversized parts or a suspicious compression ratio.</td>
                   </tr>
+                  <tr>
+                    <td><code>ZipUnsupportedError</code></td>
+                    <td><code>'ZIP_UNSUPPORTED'</code></td>
+                    <td>The archive uses a ZIP feature we do not support: zip64, encryption, unknown compression methods or multi-disk archives.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p>
+              Limits are enforced on the ZIP structure <em>before</em> inflation, every
+              entry is CRC-32 verified, and the streaming path applies the exact same
+              rules. Coded errors you can branch on:
+            </p>
+
+            <div class="table-wrap">
+              <table class="table table--api">
+                <thead>
+                  <tr>
+                    <th scope="col"><code>code</code></th>
+                    <th scope="col">Meaning</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>NOT_XLSX</code></td><td>The input isn't a valid XLSX package (or a streaming sheet part is missing).</td></tr>
+                  <tr><td><code>ZIP_SECURITY</code></td><td>Path traversal, entry-count, size or compression-ratio limit exceeded.</td></tr>
+                  <tr><td><code>ZIP_UNSUPPORTED</code></td><td>zip64, encryption, unknown compression method or multi-disk archive.</td></tr>
+                  <tr><td><code>SHEET_EXISTS</code></td><td><code>addWorksheet()</code> with a name the workbook already uses.</td></tr>
+                  <tr><td><code>BAD_SHEET_NAME</code></td><td>Empty name, longer than 31 characters, or containing <code>: \ / ? * [ ]</code>.</td></tr>
+                  <tr><td><code>SHEET_NOT_FOUND</code></td><td><code>removeWorksheet()</code> / streaming <code>readRows()</code> with an unknown sheet.</td></tr>
+                  <tr><td><code>LAST_SHEET</code></td><td>Refusing to remove the last remaining sheet — a workbook must keep at least one.</td></tr>
+                  <tr><td><code>BAD_COLUMN</code></td><td><code>getColumn()</code> outside 1–16384 / A–XFD.</td></tr>
+                  <tr><td><code>BAD_ROW_HEIGHT</code></td><td>Negative or <code>NaN</code> row height.</td></tr>
+                  <tr><td><code>ENV_UNSUPPORTED</code></td><td><code>download()</code> called outside a browser runtime.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -664,6 +1266,12 @@ try {
   }
 }</code></pre>
             </div>
+
+            <p class="note">
+              ZIP data descriptors (flag bit 3) are <em>accepted</em> since 0.4.0 — the
+              central directory carries the real CRC and sizes — so files written by
+              streaming writers open normally.
+            </p>
           </article>
         </section>
 
@@ -671,7 +1279,8 @@ try {
         <section class="section" id="examples">
           <h2>Examples</h2>
           <p class="section__lead">
-            Copy-pasteable snippets. Every write below preserves the rest of the file.
+            Copy-pasteable snippets. Every write below preserves the rest of the file;
+            the streaming example is read-only.
           </p>
 
           <!-- 1. Read values -->
@@ -839,12 +1448,371 @@ await wb.writeFile('./report-edited.xlsx');</code></pre>
               </p>
             </div>
           </article>
+
+          <!-- 6. Borders & alignment -->
+          <article class="example" id="ex-borders">
+            <h3>6 · Borders and alignment</h3>
+            <p>
+              <code>cell.border</code> takes the ExcelJS shape and supports all 13 OOXML
+              line styles; <code>cell.alignment</code> uses the OOXML vocabulary. Setting
+              one side merges over the cell's existing border, and identical styles are
+              deduplicated in <code>xl/styles.xml</code> instead of written twice.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook } from 'sheet-lite';
+
+const wb = await Workbook.readFile('./report.xlsx');
+const ws = wb.getWorksheet('Sheet1')!;
+
+ws.getCell('C3').border = {
+  top: { style: 'thin', color: { argb: 'FF00B0F0' } },
+  bottom: { style: 'double' },
+};
+ws.getCell('D4').alignment = {
+  horizontal: 'center',
+  vertical: 'center',
+  wrapText: true,
+};
+
+// Later edits merge — 'left' keeps the thin top border set above
+ws.getCell('C3').border = { left: { style: 'medium' } };
+
+// Read back what the file actually carries
+console.log(ws.getCell('C3').border);
+console.log(ws.getCell('D4').alignment);
+
+await wb.writeFile('./report-edited.xlsx');</code></pre>
+            </div>
+            <div class="callout callout--muted">
+              <p>
+                Border colors are <strong>ARGB only</strong>. Theme and indexed colors on
+                pre-existing borders are preserved in the file but not exposed through
+                the API. An empty <code>{}</code> (or re-applying the style a cell
+                already has) is a byte-level no-op.
+              </p>
+            </div>
+          </article>
+
+          <!-- 7. Rich text -->
+          <article class="example" id="ex-richtext">
+            <h3>7 · Rich text</h3>
+            <p>
+              Rich text round-trips: write <code>{ richText: [{ text, font? }, …] }</code>
+              and it is stored as inline <code>&lt;r&gt;</code> runs; read a cell whose
+              inline or shared string carries runs and you get the same shape back.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook } from 'sheet-lite';
+
+const wb = await Workbook.readFile('./report.xlsx');
+const ws = wb.getWorksheet('Sheet1')!;
+
+// Writing runs
+ws.getCell('D4').value = {
+  richText: [
+    { text: 'Total: ' },
+    { text: '1 234 €', font: { bold: true, color: 'FFFF0000' } },
+  ],
+};
+
+// Reading runs back
+const cell = ws.getCell('D4');
+if (cell.value && typeof cell.value === 'object' && 'richText' in cell.value) {
+  console.log(cell.value.richText);  // [{ text: 'Total: ' }, { text: '1 234 €', font: … }]
+  console.log(cell.value.richText.map((run) => run.text).join('')); // 'Total: 1 234 €'
+}
+
+await wb.writeFile('./report-edited.xlsx');</code></pre>
+            </div>
+            <div class="callout callout--muted">
+              <p>
+                Rich text is written as <strong>inline</strong> strings, never shared
+                strings; shared strings containing runs are read as
+                <code>{ richText }</code> but never written by us. Run fonts model bold,
+                italic, underline, size, color and name. Plain strings stay plain.
+              </p>
+            </div>
+          </article>
+
+          <!-- 8. Sheet structure -->
+          <article class="example" id="ex-structure">
+            <h3>8 · Sheet structure</h3>
+            <p>
+              Add and remove sheets, size columns and rows, and freeze panes. All of it
+              is surgical, and works on files that have no <code>styles.xml</code> or no
+              <code>sharedStrings.xml</code>.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook } from 'sheet-lite';
+
+const wb = await Workbook.readFile('./report.xlsx');
+
+// Add a sheet (registers content type, relationship and &lt;sheets&gt; entry)
+const summary = wb.addWorksheet('Summary', {
+  views: [{ state: 'frozen', ySplit: 1 }],
+});
+summary.getCell('A1').value = 'Total';
+summary.getCell('A1').font = { bold: true };
+
+// Columns and rows
+summary.getColumn('A').width = 24;
+summary.getColumn(2).hidden = true;
+summary.getRow(1).height = 22;
+
+// Freeze panes on an existing sheet (ExcelJS-compatible)
+const ws = wb.getWorksheet('Data')!;
+ws.views = [{ state: 'frozen', xSplit: 2, ySplit: 3 }];
+console.log(ws.views); // read back: [{ state: 'frozen', xSplit: 2, ySplit: 3, … }]
+
+// Remove a sheet — its part, rels and registration go away
+wb.removeWorksheet('OldSheet');
+
+await wb.writeFile('./report-edited.xlsx');</code></pre>
+            </div>
+            <div class="callout callout--muted">
+              <p>
+                New worksheets are <strong>plain</strong>: values and optional frozen
+                panes, no charts, tables, images or conditional formatting. Removing the
+                last remaining sheet is rejected with <code>LAST_SHEET</code>. Existing
+                <code>&lt;col&gt;</code> ranges are split rather than rewritten, so
+                neighbouring columns keep their widths.
+              </p>
+            </div>
+          </article>
+
+          <!-- 9. Streaming reads -->
+          <article class="example" id="ex-streaming">
+            <h3>9 · Streaming reads</h3>
+            <p>
+              For files too big to hold in memory, walk rows with a bounded memory
+              ceiling. The streaming entry point is <strong>read-only</strong>: it never
+              patches and never writes.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { StreamingWorkbook } from 'sheet-lite/stream';
+
+const wb = await StreamingWorkbook.open('./huge.xlsx'); // Node file path
+// ...or an in-memory buffer: StreamingWorkbook.open(bytes)
+
+console.log(wb.sheetNames);
+
+let total = 0;
+for await (const row of wb.getSheet('Data')!.readRows()) {
+  for (const cell of row.cells) {
+    if (cell.type === 'Number') total += cell.value as number;
+  }
+}
+console.log(total);
+
+await wb.close(); // closes the file handle</code></pre>
+            </div>
+            <div class="callout callout--muted">
+              <p>
+                A 100 000 × 8 sheet streams in <strong>10.2 MB</strong> of live heap
+                versus <strong>673 MB</strong> for <code>Workbook.read</code>. The same
+                API is available lazily from the main entry as
+                <code>await Workbook.openStream('./huge.xlsx')</code>. Pass a file path
+                or a buffer — <code>ReadableStream</code> input is not supported.
+              </p>
+            </div>
+          </article>
+
+          <!-- 10. Incremental writes -->
+          <article class="example" id="ex-writing">
+            <h3>10 · Creating large files</h3>
+            <p>
+              The write counterpart of streaming: build a workbook <strong>from
+              scratch</strong> and append rows one by one. Each row is serialized,
+              deflated and streamed to the target, so memory stays bounded however large
+              the sheet is.
+            </p>
+            <div class="code-block">
+              <div class="code-block__header">
+                <span class="code-block__lang">ts</span>
+              </div>
+              <pre><code>import { Workbook } from 'sheet-lite';           // lazy alias…
+// …or, without the indirection:
+// import { WorkbookWriter } from 'sheet-lite/write';
+
+const wb = await Workbook.create({ file: './huge.xlsx' }); // atomic file target
+const ws = wb.addWorksheet('Data', { views: [{ state: 'frozen', ySplit: 1 }] });
+ws.getColumn('A').width = 20;
+
+for (let i = 1; i <= 1_000_000; i++) {
+  ws.addRow([i, `row ${i}`, i / 2]).font = { size: 11 };
+}
+
+await wb.commit(); // …or: const bytes = await wb.toBuffer()</code></pre>
+            </div>
+            <div class="callout callout--muted">
+              <p>
+                A <code>{ file }</code> target is <strong>atomic</strong>: bytes go to a
+                sibling temp file renamed over the destination only once the archive is
+                complete, so a failure mid-loop leaves your previous file intact. Strings
+                are written inline (<code>t="inlineStr"</code>) to keep the memory bound
+                flat. The writer <strong>creates</strong> new workbooks; editing an
+                existing file uses the eager patch path (<code>Workbook.read()</code>).
+              </p>
+            </div>
+          </article>
+        </section>
+
+        <!-- ============================ LIMITATIONS ============================ -->
+        <section class="section" id="limitations">
+          <h2>Limitations</h2>
+          <p class="section__lead">
+            sheet-lite is deliberately narrower than ExcelJS and SheetJS. Here is the
+            honest list, so you can decide whether it fits before you install it.
+          </p>
+
+          <div class="table-wrap">
+            <table class="table table--api">
+              <thead>
+                <tr>
+                  <th scope="col">Out of scope</th>
+                  <th scope="col">What that means</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>.xls</code> / <code>.xlsb</code>, encryption, CSV</td>
+                  <td>
+                    OOXML only. Archives with zip64, encryption, unknown compression
+                    methods or multi-disk structures are rejected with
+                    <code>ZIP_UNSUPPORTED</code> instead of being guessed at.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Formula evaluation</td>
+                  <td>
+                    Formula cells carry their cached result only — the same as ExcelJS and
+                    SheetJS. sheet-lite never recalculates.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Creating charts, pivot tables, images, comments, conditional formatting</td>
+                  <td>
+                    These are <strong>preserved, not created</strong>: they survive a
+                    round-trip untouched, but there is no API to add them.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Rich content on new sheets</td>
+                  <td>
+                    <code>addWorksheet()</code> creates plain worksheets only — values,
+                    styles and optional frozen panes. Add rich parts later by editing.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Orphan parts on removal</td>
+                  <td>
+                    <code>removeWorksheet()</code> removes the sheet, its rels and its
+                    registration, drops a stale <code>calcChain.xml</code>, and (on
+                    <code>main</code>) prunes the parts only that sheet owned. Anything a
+                    surviving relationship still points at is kept.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Multiple sheet views</td>
+                  <td>
+                    Only the <strong>first</strong> <code>sheetView</code> of a sheet is
+                    editable through <code>views</code>; every other view and attribute is
+                    preserved as-is.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Border theme &amp; indexed colors</td>
+                  <td>
+                    Border colors you set are ARGB-only. Theme/indexed colors already in
+                    the file are preserved, but not exposed through the API.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Streaming reads are read-only</td>
+                  <td>
+                    <code>sheet-lite/stream</code> never patches and never writes. Editing
+                    an existing file needs the eager <code>Workbook</code>, which keeps
+                    untouched parts in memory to re-serialize them verbatim. Creating a new
+                    workbook with bounded memory is <code>sheet-lite/write</code>
+                    (<code>Workbook.create</code>, on <code>main</code>).
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>ReadableStream</code> input</td>
+                  <td>
+                    A ZIP has no seeking and its EOCD lives at the end, so a stream would
+                    have to be buffered anyway. Pass a Node file path or a buffer.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Eager reads of huge files</td>
+                  <td>
+                    <code>Workbook.read</code> inflates the whole archive and parses the
+                    worksheet into memory. Use <code>sheet-lite/stream</code> for large
+                    files.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Verification against Excel</td>
+                  <td>
+                    There is no Excel in CI. The gate proves that LibreOffice re-opens
+                    every edited file without repair — LibreOffice is not Excel, so
+                    treat the corpus as a strong signal, not a guarantee.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3 class="subhead">Next release — on <code>main</code>, not yet on npm</h3>
+          <p>
+            These are implemented and tested on <code>main</code> and will ship in the
+            next version; the published <code>sheet-lite@0.5.0</code> does not have them
+            yet:
+          </p>
+          <div class="callout">
+            <p>
+              <strong>Incremental write / <code>Workbook.create()</code></strong>
+              (<code>sheet-lite/write</code>) — build a workbook <strong>from
+              scratch</strong> and stream each row straight to a file or sink with a flat
+              memory profile; an atomic file target never touches your previous file until
+              <code>commit()</code>. <strong>Orphan-part pruning on
+              <code>removeWorksheet()</code></strong> — drop the drawing, chart, image,
+              comments and table parts that only the removed sheet owned, while anything a
+              surviving relationship still points at is kept.
+            </p>
+          </div>
+          <p class="note">
+            The incremental writer <strong>creates</strong> workbooks; to edit an existing
+            file, use the eager <code>Workbook.read()</code> / <code>readFile()</code>
+            patch path, which keeps untouched parts byte-identical.
+          </p>
         </section>
 
         <footer class="footer">
           <p>
             <strong>sheet-lite</strong> · MIT licensed · read, write and edit
             <code>.xlsx</code> without breaking your file.
+          </p>
+          <p class="footer__muted">
+            This page documents the published <strong>0.5.0</strong> API plus the
+            unreleased additions on <code>main</code> (next: <code>0.6.0</code>) — the
+            incremental writer and orphan-part pruning. Numbers are
+            medians from one machine (Node 24, Windows) with ±10–15% cross-run variance;
+            published sizes come from bundlephobia. “Excel” is a trademark of Microsoft
+            Corporation; ExcelJS and SheetJS are mentioned as factual comparisons.
           </p>
           <p class="footer__muted">
             Dependency-free documentation site · no build step, no network requests.

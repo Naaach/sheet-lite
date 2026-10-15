@@ -1,5 +1,14 @@
 import type { Cell, Worksheet } from '../../src/index';
-import { columnLabel, displayValue, editSeed, escapeHtml, parseCellInput } from './format';
+import {
+  columnLabel,
+  displayValue,
+  editSeed,
+  escapeHtml,
+  excelWidthPx,
+  fontStyle,
+  parseCellInput,
+  rowHeightPx,
+} from './format';
 
 /** Hard caps so a huge workbook cannot take down the tab (see README). */
 const ROW_STEP = 500;
@@ -12,11 +21,23 @@ export interface Selection {
   col: number;
 }
 
+/** Presentation hints for one column, derived from `ws.getColumn(n)`. */
+export interface ColumnMeta {
+  /** `Column.width` in Excel character units. */
+  width: number | undefined;
+  /** `Column.hidden`. */
+  hidden: boolean;
+}
+
 export interface GridCallbacks {
   /** The selected cell changed (Cell is a fresh view object for that ref). */
   onSelected(cell: Cell): void;
   /** A value was committed into a cell. */
   onEdited(cell: Cell): void;
+  /** Width / hidden of a column (optional: the grid just uses defaults). */
+  columnStyle?(col: number): ColumnMeta;
+  /** Explicit row height in points (`Row.height`), or undefined. */
+  rowHeight?(row: number): number | undefined;
 }
 
 const TYPE_CLASS: Record<string, string> = {
@@ -41,6 +62,8 @@ export class Grid {
   private renderCols = 0;
   private totalRows = 0;
   private totalCols = 0;
+  /** Per-column presentation resolved once per rebuild (see `columnStyle`). */
+  private colMeta: ColumnMeta[] = [];
 
   constructor(
     private readonly scroll: HTMLElement,
@@ -118,9 +141,13 @@ export class Grid {
   showMoreRows(): void {
     if (!this.sheet) return;
     this.renderRows = Math.min(this.renderRows + ROW_STEP, this.totalRows);
-    const keep = this.selection ?? { row: 1, col: 1 };
-    this.rebuild();
-    this.select(keep.row, keep.col);
+    this.rebuildKeepSelection();
+  }
+
+  /** Re-render after a column width / hidden column / row height change. */
+  refreshStructure(): void {
+    if (!this.sheet) return;
+    this.rebuildKeepSelection();
   }
 
   /** Re-render one cell in place after an out-of-band edit (styles, formats). */
@@ -130,22 +157,48 @@ export class Grid {
 
   // --- internals -----------------------------------------------------------
 
+  private rebuildKeepSelection(): void {
+    const keep = this.selection ?? { row: 1, col: 1 };
+    this.rebuild();
+    this.select(keep.row, keep.col);
+  }
+
   private rebuild(): void {
     const sheet = this.sheet;
     if (!sheet) return;
 
     const cols = this.renderCols;
+    this.colMeta = Array.from({ length: cols }, (_, i) => this.cb.columnStyle?.(i + 1) ?? {
+      width: undefined,
+      hidden: false,
+    });
+
     const head = [`<th class="corner" aria-hidden="true"></th>`];
-    for (let c = 1; c <= cols; c++) head.push(`<th scope="col">${columnLabel(c)}</th>`);
+    const colgroup = [`<col style="width:44px">`];
+    for (let c = 1; c <= cols; c++) {
+      const meta = this.colMeta[c - 1]!;
+      head.push(
+        `<th scope="col"${meta.hidden ? ' class="col-hidden"' : ''}>${columnLabel(c)}</th>`,
+      );
+      colgroup.push(
+        meta.width === undefined ? '<col>' : `<col style="width:${excelWidthPx(meta.width)}px">`,
+      );
+    }
 
     const body: string[] = [];
     for (let r = 1; r <= this.renderRows; r++) {
-      body.push(`<tr><th scope="row">${r}</th>${this.rowCellsHtml(sheet, r, cols)}</tr>`);
+      const height = this.cb.rowHeight?.(r);
+      const style = height === undefined ? '' : ` style="height:${rowHeightPx(height)}px"`;
+      body.push(
+        `<tr${style}><th scope="row">${r}</th>${this.rowCellsHtml(sheet, r, cols)}</tr>`,
+      );
     }
 
     this.table = document.createElement('table');
     this.table.className = 'sheet';
-    this.table.innerHTML = `<thead><tr>${head.join('')}</tr></thead><tbody>${body.join('')}</tbody>`;
+    this.table.innerHTML =
+      `<colgroup>${colgroup.join('')}</colgroup>` +
+      `<thead><tr>${head.join('')}</tr></thead><tbody>${body.join('')}</tbody>`;
     this.scroll.replaceChildren(this.table);
   }
 
@@ -161,31 +214,30 @@ export class Grid {
   private cellHtml(cell: Cell, row: number, col: number): string {
     const value = cell.value;
     const selected = this.selection?.row === row && this.selection?.col === col ? ' selected' : '';
-    let classes = TYPE_CLASS[cell.type] ?? '';
+    let classes = `${TYPE_CLASS[cell.type] ?? ''}${selected}${this.cellExtraClass(cell)}`;
     let title = '';
 
-    const wantsFormat =
-      value !== null &&
-      (typeof value === 'number' ||
-        value instanceof Date ||
-        (typeof value === 'object' && 'formula' in value));
-    const fmt = wantsFormat ? cell.numFmt : 'General';
-
-    let inner = escapeHtml(displayValue(value, fmt));
     if (cell.type === 'Formula') {
       const formula = value && typeof value === 'object' && 'formula' in value ? value.formula : '';
       title = ` title="=${escapeHtml(formula)}"`;
-      inner =
-        `<span class="fx-badge" title="=${escapeHtml(formula)}">f</span>` + inner;
     }
 
-    if (value !== null) {
+    return `<td data-r="${row}" data-c="${col}" class="${classes}"${title}>${cellContentHtml(cell)}</td>`;
+  }
+
+  /** Cell-level classes that are not part of the value type (bold, hidden column). */
+  private cellExtraClass(cell: Cell): string {
+    const value = cell.value;
+    let classes = '';
+    if (value !== null && typeof value === 'object' && 'richText' in value) {
+      classes += ' rich';
+    } else if (value !== null) {
       const font = cell.font;
       if (font.bold) classes += ' bold';
       if (font.italic) classes += ' italic';
     }
-
-    return `<td data-r="${row}" data-c="${col}" class="${classes}${selected}"${title}>${inner}</td>`;
+    if (this.colMeta[cell.col - 1]?.hidden) classes += ' col-hidden';
+    return classes;
   }
 
   private tdAt(row: number, col: number): HTMLTableCellElement | null {
@@ -219,23 +271,14 @@ export class Grid {
     const td = this.tdAt(row, col);
     if (!td || !this.sheet) return;
     const cell = this.sheet.getCell(row, col);
-    const selected = this.selection?.row === row && this.selection?.col === col;
-    let classes = `${TYPE_CLASS[cell.type] ?? ''}${selected ? ' selected' : ''}`;
+    td.className = `${TYPE_CLASS[cell.type] ?? ''}${this.selection?.row === row && this.selection?.col === col ? ' selected' : ''}${this.cellExtraClass(cell)}`;
     td.removeAttribute('title');
-    const value = cell.value;
     if (cell.type === 'Formula') {
+      const value = cell.value;
       const formula = value && typeof value === 'object' && 'formula' in value ? value.formula : '';
       td.setAttribute('title', `=${formula}`);
-      td.innerHTML = `<span class="fx-badge" title="=${escapeHtml(formula)}">f</span>${escapeHtml(displayValue(value, cell.numFmt))}`;
-    } else {
-      td.innerHTML = escapeHtml(displayValue(value, cell.numFmt));
     }
-    if (value !== null) {
-      const font = cell.font;
-      if (font.bold) classes += ' bold';
-      if (font.italic) classes += ' italic';
-    }
-    td.className = classes;
+    td.innerHTML = cellContentHtml(cell);
   }
 
   private onKeyDown(e: KeyboardEvent): void {
@@ -356,4 +399,28 @@ export class Grid {
     this.refreshCell(sel.row, sel.col);
     this.cb.onEdited(cell);
   }
+}
+
+/**
+ * Inner HTML of a cell: rich-text runs keep their own font styling, formulas
+ * get the `f` badge, everything else is escaped plain text.
+ */
+function cellContentHtml(cell: Cell): string {
+  const value = cell.value;
+
+  if (value !== null && typeof value === 'object' && 'richText' in value) {
+    return value.richText
+      .map((run) => {
+        const style = fontStyle(run.font);
+        return `<span${style ? ` style="${style}"` : ''}>${escapeHtml(run.text)}</span>`;
+      })
+      .join('');
+  }
+
+  const text = escapeHtml(displayValue(value, cell.numFmt));
+  if (cell.type === 'Formula') {
+    const formula = value && typeof value === 'object' && 'formula' in value ? value.formula : '';
+    return `<span class="fx-badge" title="=${escapeHtml(formula)}">f</span>${text}`;
+  }
+  return text;
 }

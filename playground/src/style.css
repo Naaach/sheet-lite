@@ -65,6 +65,13 @@
   box-sizing: border-box;
 }
 
+/* An author `display` declaration (chips, the error bar, the grid notice) wins
+   over the user-agent `[hidden]` rule, so panels marked `hidden` stayed painted.
+   Restore "hidden means gone" once, globally. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
@@ -288,6 +295,16 @@ button {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.btn-block {
+  width: 100%;
+  justify-content: center;
+}
+
+.btn-grow {
+  flex: 1 1 auto;
+  justify-content: center;
 }
 
 .linklike {
@@ -558,6 +575,28 @@ button {
   font-style: italic;
 }
 
+/* Rich-text cells ({ richText: [...] }) get a quiet marker on their left edge,
+   so a value written with runs reads differently from a plain string. */
+.sheet td.rich {
+  box-shadow: inset 2px 0 0 var(--accent-soft);
+}
+
+/* Column.width / Column.hidden as set through ws.getColumn(n): a hidden column
+   collapses to a thin gutter instead of disappearing, so it stays selectable. */
+.sheet th.col-hidden,
+.sheet td.col-hidden {
+  width: 7px;
+  min-width: 7px;
+  max-width: 7px;
+  padding: 0;
+  overflow: hidden;
+  border-right-color: transparent;
+}
+
+.sheet td.col-hidden:hover {
+  background: var(--accent-soft);
+}
+
 @media (prefers-color-scheme: light) {
   .sheet td.formula {
     color: #7c3aed;
@@ -715,6 +754,113 @@ button {
 
 .actions .btn-wide {
   grid-column: 1 / -1;
+}
+
+/* structure controls (sheet structure panel) */
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.field-row .btn {
+  flex: none;
+}
+
+.field {
+  flex: none;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-3);
+}
+
+.field-suffix {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-3);
+  margin-left: -2px;
+}
+
+.input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.input::placeholder {
+  color: var(--text-3);
+}
+
+.input:hover:not(:disabled) {
+  border-color: var(--text-3);
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+
+.input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.input-mini {
+  flex: 0 1 58px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* the native number spinners crowd out tiny numeric fields */
+.input-mini::-webkit-inner-spin-button,
+.input-mini::-webkit-outer-spin-button {
+  margin: 0;
+  opacity: 0.35;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+
+.check input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.field-state {
+  margin: -4px 0 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule {
+  height: 1px;
+  margin: 12px 0;
+  background: var(--border);
 }
 
 /* patch monitor */

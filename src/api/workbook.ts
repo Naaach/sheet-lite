@@ -3,11 +3,27 @@ import { PartStore } from '../opc/part-store';
 import { readZip, writeZip } from '../zip/archive';
 import { SheetLiteError } from '../zip/errors';
 import { parseContentTypes, type ContentTypes } from '../opc/content-types';
+import { pruneOrphanParts } from '../opc/orphan-prune';
 import { readPackageMeta, type PackageMeta, type SheetRef } from '../reader/package-reader';
 import { StyleRegistry } from '../writer/style-registry';
 import type { StreamingWorkbook, StreamInput } from './streaming';
+import type { WorkbookWriter, WorkbookWriterOptions } from './write-workbook';
 import type { ReadLimits } from '../zip/raw';
+import { assertNotCompoundFile } from '../zip/raw';
 import type { SheetViewProps } from '../model/view';
+import {
+  MAIN_CONTENT_TYPE,
+  MINIMAL_STYLES,
+  SHEET_CONTENT_TYPE,
+  SHEET_NS,
+  STYLES_CONTENT_TYPE,
+  STYLES_REL,
+  WORKSHEET_REL,
+  XML_DECL,
+  minimalContentTypes,
+  minimalWorkbookRels,
+} from '../opc/minimal-package';
+import { validateSheetName } from '../opc/sheet-name';
 import {
   addOverride,
   addRelationship,
@@ -32,59 +48,11 @@ function toUint8(input: Uint8Array | ArrayBuffer | ArrayBufferView): Uint8Array 
 
 const toPartKey = (partName: string): string => partName.replace(/^\//, '');
 
-const MAIN_CONTENT_TYPE =
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml';
-const SHEET_CONTENT_TYPE =
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml';
-const STYLES_CONTENT_TYPE =
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml';
-const WORKSHEET_REL =
-  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet';
-const STYLES_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles';
-
-const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
-const SHEET_NS =
-  'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
-  'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
-
-/** Minimal valid styleSheet, used when the source workbook has no styles.xml. */
-const MINIMAL_STYLES =
-  XML_DECL +
-  `<styleSheet ${SHEET_NS}>` +
-  '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>' +
-  '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>' +
-  '<borders count="1"><border/></borders>' +
-  '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-  '<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>' +
-  '</styleSheet>';
-
 /** First sheet of a workbook without any: shared strings are written inline. */
 const MINIMAL_SHEET_XML =
   XML_DECL +
   `<worksheet ${SHEET_NS}>` +
   '<dimension ref="A1"/><sheetData/></worksheet>';
-
-const XML_CONTENT_TYPE = 'application/xml';
-const RELS_CONTENT_TYPE = 'application/vnd.openxmlformats-package.relationships+xml';
-
-function minimalContentTypes(): string {
-  return (
-    XML_DECL +
-    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
-    `<Default Extension="rels" ContentType="${RELS_CONTENT_TYPE}"/>` +
-    `<Default Extension="xml" ContentType="${XML_CONTENT_TYPE}"/>` +
-    `<Override PartName="/xl/workbook.xml" ContentType="${MAIN_CONTENT_TYPE}"/>` +
-    '</Types>'
-  );
-}
-
-function minimalWorkbookRels(): string {
-  return (
-    XML_DECL +
-    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-    '</Relationships>'
-  );
-}
 
 /**
  * The public entry point. Loads an OPC package and writes it back
@@ -114,7 +82,10 @@ export class Workbook {
   }
 
   static read(input: Uint8Array | ArrayBuffer | ArrayBufferView): Workbook {
-    return new Workbook(new PartStore(readZip(toUint8(input))));
+    const bytes = toUint8(input);
+    // A legacy `.xls` / encrypted OOXML container is not a broken archive.
+    assertNotCompoundFile(bytes);
+    return new Workbook(new PartStore(readZip(bytes)));
   }
 
   /**
@@ -136,6 +107,29 @@ export class Workbook {
   static async openStream(input: StreamInput, limits?: Partial<ReadLimits>): Promise<StreamingWorkbook> {
     const { StreamingWorkbook: SW } = await import('./streaming');
     return SW.open(input, limits);
+  }
+
+  /**
+   * Create a NEW workbook that is written incrementally, with bounded memory
+   * (ExcelJS-style: build rows one by one, then `commit()`/`toBuffer()`).
+   *
+   * ```ts
+   * const wb = await Workbook.create({ file: './huge.xlsx' });
+   * const ws = wb.addWorksheet('Data');
+   * for (let i = 0; i < 100_000; i++) ws.addRow([i, `row ${i}`]);
+   * await wb.commit();
+   * ```
+   *
+   * Unlike this class, the returned writer never holds the worksheet XML (nor
+   * the archive) in memory: rows are deflated and streamed straight to the
+   * target. It lives in the separate `sheet-lite/write` entry point and is
+   * loaded on demand here, so the eager bundle keeps its size budget.
+   *
+   * To EDIT an existing workbook use `Workbook.read()` / `readFile()`.
+   */
+  static async create(options?: WorkbookWriterOptions): Promise<WorkbookWriter> {
+    const { WorkbookWriter: Writer } = await import('../write');
+    return Writer.create(options);
   }
 
   async writeFile(path: string): Promise<void> {
@@ -201,18 +195,7 @@ export class Workbook {
    * name is empty, longer than 31 characters or contains `: \ / ? * [ ]`.
    */
   addWorksheet(name: string, options?: { views?: SheetViewProps[] }): Worksheet {
-    if (typeof name !== 'string' || name.length === 0 || name.length > 31) {
-      throw new SheetLiteError(
-        `Invalid worksheet name ${JSON.stringify(name)}: must be 1-31 characters`,
-        'BAD_SHEET_NAME',
-      );
-    }
-    if (/[:\\/?*[\]]/.test(name)) {
-      throw new SheetLiteError(
-        `Invalid worksheet name ${JSON.stringify(name)}: the characters : \\ / ? * [ ] are not allowed`,
-        'BAD_SHEET_NAME',
-      );
-    }
+    validateSheetName(name);
     if (this.worksheetList.some((sheet) => sheet.name === name)) {
       throw new SheetLiteError(`A worksheet named "${name}" already exists`, 'SHEET_EXISTS');
     }
@@ -269,10 +252,24 @@ export class Workbook {
    * dropped as well — Excel rebuilds it; defined names bound to the removed
    * sheet are removed with it.
    *
+   * By default the parts ONLY that sheet owned are pruned too: the walk
+   * follows its rels (drawing, legacy VML, comments, table, printer settings,
+   * hyperlinks) and recursively the rels of everything they reference (a
+   * drawing owns its charts, a chart its embedded workbook), dropping those
+   * parts, their `.rels` files and their content-type entries. A part that any
+   * surviving relationship still points at — another sheet's drawing, an image
+   * two drawings share, `styles.xml`, `sharedStrings.xml`, a pivot cache — is
+   * kept, as is anything ambiguous: an orphan is invisible to Excel, a
+   * dangling target is a repair prompt. Parts that survive stay byte-identical.
+   *
+   * @param options - `prune: false` keeps the orphaned parts in the package
+   * (the historical behaviour: nothing is deleted except the sheet itself and
+   * what would otherwise go stale). Default `true`.
+   *
    * Removing the LAST remaining sheet is rejected with `LAST_SHEET` (a
    * workbook must keep at least one sheet for Excel to open it).
    */
-  removeWorksheet(nameOrId: string | number): void {
+  removeWorksheet(nameOrId: string | number, options?: { prune?: boolean }): void {
     const index = this.worksheetList.findIndex((sheet) =>
       typeof nameOrId === 'number' ? sheet.id === nameOrId : sheet.name === nameOrId,
     );
@@ -290,6 +287,10 @@ export class Workbook {
     const partKey = worksheet.partName;
     const refIndex = this.meta.sheets.findIndex((sheet) => toPartKey(sheet.partName) === partKey);
     const ref = this.meta.sheets[refIndex];
+
+    // First, while the sheet and its rels are still in the store: whatever
+    // ONLY it could reach dies with it.
+    if (options?.prune ?? true) pruneOrphanParts(this.store, partKey);
 
     this.store.remove(partKey);
     const relsFile = relsPathForPart(partKey);
@@ -362,3 +363,4 @@ export class Workbook {
     return this.store;
   }
 }
+

@@ -33,6 +33,17 @@ pnpm --dir playground typecheck  # tsc --noEmit (covers playground + ../src)
   backed by `getCell`/`getRow`/`eachRow`, `cell.value` edits (numbers, text,
   booleans, dates, and `=…` typed formulas), `cell.font`, `cell.numFmt`,
   `sheet.addRow(values)`, `sheet.mergeCells`/`unmergeCells`.
+- **Cell styling (styles2 milestone)** — the **Cell actions** panel writes
+  `cell.border` (*Box border* = four thin sides, *Bottom border* = one side
+  merging over whatever the cell already had), `cell.alignment`
+  (left/center/right, wrap) and a **rich-text value**
+  (`cell.value = { richText: [{ text, font }, …] }`), which is painted run by
+  run in the grid and in the inspector (which also lists border + alignment).
+- **Sheet structure (sheets milestone)** — the **Sheet structure** panel calls
+  `wb.addWorksheet(name)` / `wb.removeWorksheet(name)`, `ws.getColumn(n).width`
+  / `.hidden`, `ws.getRow(n).height` and `ws.views = [{ state: 'frozen',
+  xSplit, ySplit }]` (plus `state: 'normal'` to unfreeze). Column and row
+  targets follow the grid selection unless you point them somewhere else.
 - **Patch-only writing** — the **Patch monitor** snapshots every OPC part at
   load time (`Workbook.parts()`), then after each edit compares parts
   byte-for-byte between the original and a fresh `Workbook.read(wb.toBuffer())`:
@@ -42,7 +53,10 @@ pnpm --dir playground typecheck  # tsc --noEmit (covers playground + ../src)
     formats were introduced — are rewritten.
 - **Safety** — `SheetLiteError` and `ZipSecurityError` surface in an error bar
   with their machine-readable `code` (try the *Unsafe demo* button, which
-  feeds the library a package with a `../` path-traversal entry).
+  feeds the library a package with a `../` path-traversal entry, or duplicate /
+  illegal sheet names in the **Sheet structure** panel, which report
+  `SHEET_EXISTS` / `BAD_SHEET_NAME`). Removing the last remaining sheet is
+  reported the same way (`LAST_SHEET`) and the button is disabled up front.
 - **Downloading** — `wb.toBuffer()` → `Blob` → temporary `<a download>` link.
   (Node-only APIs like `Workbook.readFile`/`writeFile` are never used here.)
 
@@ -68,6 +82,17 @@ pnpm --dir playground typecheck  # tsc --noEmit (covers playground + ../src)
   (grow with *Show 500 more rows* — the cap exists so huge files stay snappy)
   and columns at 40. Merged ranges are written correctly but are not visually
   spanned in the grid; the inspector shows the cell's merge/number-format data.
+- Column widths and row heights set through the panel are *approximated* in the
+  grid (Excel character units → px, points → px, both clamped); a hidden column
+  collapses to a thin gutter instead of disappearing, so it stays selectable.
+  Frozen panes are reported in the panel only — the grid header/row-number
+  columns are always sticky.
+- Cell borders can be *added* and merged side-by-side, but not cleared: the
+  library merges `cell.border` over the cell's current border and an empty
+  `{}` is a deliberate no-op, so the panel offers no "remove border" button.
+- Cell values written as rich text read back as `{ richText }`; the grid and
+  the inspector flatten the runs for display, and editing such a cell replaces
+  it with the typed plain text.
 - Dates typed into the grid use `YYYY-MM-DD`; other date input formats are
   stored as text.
 - Formula cells show their cached result (with an `f` badge and the formula in

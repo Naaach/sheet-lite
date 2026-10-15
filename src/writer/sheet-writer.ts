@@ -1,10 +1,12 @@
-import { dateToSerial } from '../model/dates';
 import { escapeXml } from '../xml/xml';
-import type { CellValue, RichTextRun } from '../model/value';
-import type { CellStyleOverrides, FontProps } from '../model/style';
+import type { CellValue } from '../model/value';
+import type { CellStyleOverrides } from '../model/style';
 import type { SheetViewProps } from '../model/view';
+import { assertMergeRange } from '../model/refs';
 import { coordsToRef, refToCoords, type ColRecord, type ParsedSheet } from '../reader/sheet-parser';
 import type { StyleRegistry } from './style-registry';
+import { generateCellXml } from './cell-xml';
+import { paneXmlFor } from './cell-xml';
 
 export interface CellEdit {
   hasValue: boolean;
@@ -32,64 +34,6 @@ export interface SheetPatch {
   rowHeights: Map<number, number | null>;
   /** Requested sheet views (frozen panes); `null` leaves the XML untouched. */
   views: SheetViewProps[] | null;
-}
-
-/** `<rPr>` children for one rich-text run (run fonts use `rFont`, not `name`). */
-function runPrXml(font: FontProps): string {
-  let xml = '';
-  if (font.bold) xml += '<b/>';
-  if (font.italic) xml += '<i/>';
-  if (font.underline) xml += '<u/>';
-  if (font.size !== undefined) xml += `<sz val="${font.size}"/>`;
-  if (font.color) xml += `<color rgb="${font.color}"/>`;
-  if (font.name) xml += `<rFont val="${escapeXml(font.name)}"/>`;
-  return xml ? `<rPr>${xml}</rPr>` : '';
-}
-
-/** `<r>` runs of a rich-text inline string. */
-function richTextXml(runs: RichTextRun[]): string {
-  if (runs.length === 0) return '<t/>';
-  return runs
-    .map((run) => {
-      const text = run.text ?? '';
-      const preserve = /^\s|\s$|[\n\t]/.test(text) ? ' xml:space="preserve"' : '';
-      return `<r>${run.font ? runPrXml(run.font) : ''}<t${preserve}>${escapeXml(text)}</t></r>`;
-    })
-    .join('');
-}
-
-/** Serialize a single cell into OOXML `<c>` markup. `''` removes the cell. */
-export function generateCellXml(
-  ref: string,
-  value: CellValue,
-  styleIndex: number,
-  date1904: boolean,
-): string {
-  if (value === null || value === undefined) return '';
-  const sAttr = styleIndex ? ` s="${styleIndex}"` : '';
-
-  if (typeof value === 'number') return `<c r="${ref}"${sAttr}><v>${value}</v></c>`;
-  if (typeof value === 'boolean') return `<c r="${ref}" t="b"${sAttr}><v>${value ? 1 : 0}</v></c>`;
-  if (value instanceof Date) return `<c r="${ref}"${sAttr}><v>${dateToSerial(value, date1904)}</v></c>`;
-  if (typeof value === 'object' && 'error' in value) {
-    return `<c r="${ref}" t="e"${sAttr}><v>${escapeXml(value.error)}</v></c>`;
-  }
-  if (typeof value === 'object' && 'formula' in value) {
-    const { result } = value;
-    let resultText = '';
-    if (result instanceof Date) resultText = String(dateToSerial(result, date1904));
-    else if (typeof result === 'number' || typeof result === 'string' || typeof result === 'boolean') {
-      resultText = String(result);
-    }
-    return `<c r="${ref}"${sAttr}><f>${escapeXml(value.formula)}</f><v>${escapeXml(resultText)}</v></c>`;
-  }
-  if (typeof value === 'object' && 'richText' in value) {
-    return `<c r="${ref}" t="inlineStr"${sAttr}><is>${richTextXml(value.richText)}</is></c>`;
-  }
-
-  const str = String(value);
-  const preserve = /^\s|\s$|[\n\t]/.test(str) ? ' xml:space="preserve"' : '';
-  return `<c r="${ref}" t="inlineStr"${sAttr}><is><t${preserve}>${escapeXml(str)}</t></is></c>`;
 }
 
 interface Op {
@@ -349,23 +293,7 @@ function splitColEntry(entry: ColRecord, editedCols: number[], colEdits: Map<num
 }
 
 /** The `<pane>` element for the requested first view, or null when unfrozen. */
-function paneXmlFor(view: SheetViewProps | undefined): string | null {
-  if (!view) return null;
-  const state = view.state ?? 'normal';
-  if (state === 'normal') return null;
-  const x = Math.max(0, Math.floor(view.xSplit ?? 0));
-  const y = Math.max(0, Math.floor(view.ySplit ?? 0));
-  if (x === 0 && y === 0) return null;
-  const attrs = [
-    x > 0 ? `xSplit="${x}"` : '',
-    y > 0 ? `ySplit="${y}"` : '',
-    `topLeftCell="${escapeXml(view.topLeftCell ?? coordsToRef(y + 1, x + 1))}"`,
-    `activePane="${x > 0 && y > 0 ? 'bottomRight' : x > 0 ? 'topRight' : 'bottomLeft'}"`,
-  ].filter(Boolean);
-  if (state !== 'split') attrs.push(`state="${state}"`);
-  return `<pane ${attrs.join(' ')}/>`;
-}
-
+/** Patch the `<sheetViews>/<sheetView>/<pane>` triple of a sheet. */
 function applyViews(sheet: ParsedSheet, views: SheetViewProps[] | null, ops: Op[]): void {
   if (!views) return;
   const paneXml = paneXmlFor(views[0]);
@@ -452,7 +380,11 @@ function applyMergeEdits(sheet: ParsedSheet, newMerges: string[], removedMerges:
   }
 
   const hasAdd = newMerges.length > 0;
-  const additions = newMerges.map((ref) => `<mergeCell ref="${ref}"/>`).join('');
+  // Validated here (not when `mergeCells()` was called) so the eager writer
+  // rejects exactly what the incremental one rejects, with the same code.
+  const additions = newMerges
+    .map((ref) => `<mergeCell ref="${escapeXml(assertMergeRange(ref))}"/>`)
+    .join('');
 
   if (container) {
     if (!hasAdd && removedMerges.length === 0) return;

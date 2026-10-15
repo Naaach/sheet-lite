@@ -1,4 +1,4 @@
-import type { CellValue } from '../../src/index';
+import type { CellValue, FontProps, RichTextValue } from '../../src/index';
 
 /** Human-readable byte size, e.g. "12.4 kB". */
 export function formatBytes(n: number): string {
@@ -23,12 +23,22 @@ export function displayDate(d: Date): string {
 }
 
 /**
+ * Flattened text of a rich-text value. Reading a cell with `<r>` runs gives
+ * `{ richText }` instead of a plain string, so every value formatter has to
+ * collapse the runs before it can print anything.
+ */
+export function richTextText(value: RichTextValue): string {
+  return value.richText.map((run) => run.text).join('');
+}
+
+/**
  * Grid text for a cell value. Numbers with a `#,##0.00` format get thousand
  * separators so the grid feels like a spreadsheet, formulas show their
  * computed result (the raw formula lives in the tooltip/inspector).
  */
 export function displayValue(value: CellValue, numFmt = 'General'): string {
   if (value === null || value === undefined) return '';
+  if (typeof value === 'object' && 'richText' in value) return richTextText(value);
   if (typeof value === 'number') {
     if (numFmt === '#,##0.00') {
       return value.toLocaleString('en-US', {
@@ -52,6 +62,7 @@ export function displayValue(value: CellValue, numFmt = 'General'): string {
 /** Raw text to seed the cell editor (formulas come back as `=...`). */
 export function editSeed(value: CellValue): string {
   if (value === null || value === undefined) return '';
+  if (typeof value === 'object' && 'richText' in value) return richTextText(value);
   if (typeof value === 'object' && 'formula' in value) return `=${value.formula}`;
   if (typeof value === 'number') return String(value);
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
@@ -92,6 +103,35 @@ export function columnLabel(col: number): string {
     n = Math.floor((n - 1) / 26);
   }
   return label;
+}
+
+/**
+ * CSS declarations for a font, used to paint rich-text runs. ARGB colors keep
+ * their last 6 digits (RGB), exactly like the fill swatch in the inspector.
+ */
+export function fontStyle(font: FontProps | undefined): string {
+  if (!font) return '';
+  const declarations: string[] = [];
+  if (font.bold) declarations.push('font-weight:650');
+  if (font.italic) declarations.push('font-style:italic');
+  if (font.underline) declarations.push('text-decoration:underline');
+  if (font.size !== undefined) declarations.push(`font-size:${font.size}pt`);
+  if (font.color) declarations.push(`color:#${font.color.slice(-6)}`);
+  return declarations.join(';');
+}
+
+/**
+ * Approximate CSS pixels for an Excel column width / row height so the grid
+ * previews what the file will look like. Excel sizes columns in characters of
+ * the default font (~7 px each, +5 px padding) and rows in points.
+ * Both are clamped so a silly value cannot break the preview.
+ */
+export function excelWidthPx(width: number): number {
+  return Math.min(Math.max(Math.round(width * 7 + 5), 24), 520);
+}
+
+export function rowHeightPx(points: number): number {
+  return Math.min(Math.max(Math.round((points * 96) / 72), 12), 300);
 }
 
 /** Minimal HTML escaping for injected cell text. */

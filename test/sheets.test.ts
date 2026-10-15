@@ -2,12 +2,22 @@ import { describe, it, expect } from 'vitest';
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import { strFromU8, strToU8, zipSync } from 'fflate';
-import { Workbook, SheetLiteError } from '../src/index';
+import { Workbook, SheetLiteError, ZipSecurityError } from '../src/index';
+import { StreamingWorkbook } from '../src/stream';
 import { parseContentTypes, contentTypeOf, resolvePartPath } from '../src/index';
 import { parseXml } from '../src/xml/xml';
 import { makeXlsxWithSheet } from './fixtures/make';
 
 const eq = (a: Uint8Array, b: Uint8Array): boolean => Buffer.from(a).equals(Buffer.from(b));
+
+/** ExcelJS's `load` typings use a legacy global `Buffer` interface. */
+type ExcelLoadInput = Parameters<ExcelJS.Workbook['xlsx']['load']>[0];
+
+async function loadInExcelJs(data: Uint8Array): Promise<ExcelJS.Workbook> {
+  const ej = new ExcelJS.Workbook();
+  await ej.xlsx.load(data as unknown as ExcelLoadInput);
+  return ej;
+}
 
 const WORKSHEET_CT = 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml';
 
@@ -97,6 +107,124 @@ function makeTwoSheetPackage(): Uint8Array {
   });
 }
 
+/** A real 1x1 PNG so ExcelJS emits an actual `xl/media/*` part. */
+const PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+/**
+ * Two-sheet workbook whose sheets own satellite parts: both have a comment
+ * (comments + legacy VML) and an image, `Rich` also has a table. The image is
+ * registered once and used by both sheets, so `xl/media/image1.png` is shared
+ * by two drawings — the part a naive prune would delete.
+ */
+async function buildSatelliteFile(): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+
+  const keep = wb.addWorksheet('Keep');
+  keep.getCell('A1').value = 'keep me';
+  keep.getCell('A1').note = 'keep note';
+
+  const rich = wb.addWorksheet('Rich');
+  rich.getCell('A1').value = 'rich';
+  rich.getCell('A1').note = 'rich note';
+  rich.addTable({
+    name: 'RichTable',
+    ref: 'A10',
+    headerRow: true,
+    totalsRow: false,
+    columns: [{ name: 'X' }, { name: 'Y' }],
+    rows: [[1, 2]],
+  });
+
+  const image = wb.addImage({ extension: 'png', base64: PNG_BASE64 });
+  keep.addImage(image, 'C2:D5');
+  rich.addImage(image, 'C2:D5');
+
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
+/**
+ * Same, but `Rich` is the ONLY sheet carrying the image: dropping it must also
+ * drop `xl/media/image1.png` and the now-unused `png` content-type Default.
+ */
+async function buildLoneImageFile(): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  const keep = wb.addWorksheet('Keep');
+  keep.getCell('A1').value = 'keep me';
+
+  const rich = wb.addWorksheet('Rich');
+  rich.getCell('A1').value = 'rich';
+  rich.getCell('A1').note = 'rich note';
+  rich.addImage(wb.addImage({ extension: 'png', base64: PNG_BASE64 }), 'C2:D5');
+
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
+/**
+ * Two sheets pointing at the SAME drawing, which itself owns a chart (which
+ * owns its colour style) and an image. Removing one sheet must keep the whole
+ * shared subtree alive: a kept part's references must survive with it.
+ */
+function makeSharedDrawingPackage(): Uint8Array {
+  const rel = (id: string, type: string, target: string) =>
+    `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/${type}" Target="${target}"/>`;
+  const rels = (...entries: string[]) =>
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${entries.join('')}</Relationships>`;
+  const ct = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="${WORKSHEET_CT}"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="${WORKSHEET_CT}"/>
+  <Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>
+  <Override PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>
+  <Override PartName="/xl/charts/colors1.xml" ContentType="application/vnd.ms-office.chartcolorstyle+xml"/>
+</Types>`;
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="One" sheetId="1" r:id="rId1"/>
+    <sheet name="Two" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`;
+  const sheet = (n: number) =>
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1"/><sheetData><row r="1"><c r="A1"><v>${n}</v></c></row></sheetData>
+</worksheet>`;
+  const tiny = (body: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n${body}`;
+  return zipSync({
+    '[Content_Types].xml': strToU8(ct),
+    '_rels/.rels': strToU8(rels(rel('rId1', 'officeDocument', 'xl/workbook.xml'))),
+    'xl/workbook.xml': strToU8(workbook),
+    'xl/_rels/workbook.xml.rels': strToU8(
+      rels(
+        rel('rId1', 'worksheet', 'worksheets/sheet1.xml'),
+        rel('rId2', 'worksheet', 'worksheets/sheet2.xml'),
+      ),
+    ),
+    'xl/worksheets/sheet1.xml': strToU8(sheet(1)),
+    'xl/worksheets/sheet2.xml': strToU8(sheet(2)),
+    // Both sheets point at the same drawing.
+    'xl/worksheets/_rels/sheet1.xml.rels': strToU8(rels(rel('rId1', 'drawing', '../drawings/drawing1.xml'))),
+    'xl/worksheets/_rels/sheet2.xml.rels': strToU8(rels(rel('rId1', 'drawing', '../drawings/drawing1.xml'))),
+    'xl/drawings/drawing1.xml': strToU8(tiny('<wsDr xmlns="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"/>')),
+    'xl/drawings/_rels/drawing1.xml.rels': strToU8(
+      rels(
+        rel('rId1', 'chart', '../charts/chart1.xml'),
+        rel('rId2', 'image', '../media/image1.png'),
+      ),
+    ),
+    'xl/charts/chart1.xml': strToU8(tiny('<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>')),
+    'xl/charts/_rels/chart1.xml.rels': strToU8(rels(rel('rId1', 'chartColorStyle', 'colors1.xml'))),
+    'xl/charts/colors1.xml': strToU8(tiny('<cs:colorStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle"/>')),
+    'xl/media/image1.png': new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+  });
+}
+
 const allElements = (name: string, node: ReturnType<typeof parseXml>): ReturnType<typeof parseXml>[] => {
   const out: ReturnType<typeof parseXml>[] = [];
   const walk = (n: ReturnType<typeof parseXml>): void => {
@@ -130,6 +258,21 @@ function expectCoherentPackage(bytes: Uint8Array): void {
     const resolved = resolvePartPath('/xl/workbook.xml', rel.attrs.Target ?? '');
     relTargets.set(id, resolved);
     expect(parts.has(resolved.replace(/^\//, '')), `relationship target missing: ${resolved}`).toBe(true);
+  }
+
+  // No dangling target anywhere in the package (satellite rels included).
+  for (const name of parts.names()) {
+    if (!name.includes('_rels') || !name.endsWith('.rels')) continue;
+    const slash = name.lastIndexOf('/_rels/');
+    const owner =
+      name === '_rels/.rels'
+        ? '/'
+        : `/${name.slice(0, slash)}/${name.slice(slash + 7, -'.rels'.length)}`;
+    for (const rel of allElements('Relationship', parseXml(strFromU8(parts.get(name)!)))) {
+      if ((rel.attrs.TargetMode ?? '').toLowerCase() === 'external') continue;
+      const target = resolvePartPath(owner, rel.attrs.Target ?? '');
+      expect(parts.has(target.replace(/^\//, '')), `${name} -> ${target}`).toBe(true);
+    }
   }
 
   const sheetIds = new Set<string>();
@@ -384,6 +527,248 @@ describe('sheets — removeWorksheet', () => {
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1"/><sheetData/></worksheet>`,
     ))).toBe(true);
+  });
+});
+
+describe('sheets — orphan part pruning', () => {
+  it('drops the satellite parts only the removed sheet owned, with their content types', async () => {
+    const file = await buildSatelliteFile();
+    const before = Workbook.read(file).parts();
+    // Guard the fixture: the parts under test must really be there.
+    for (const part of [
+      'xl/comments2.xml',
+      'xl/drawings/vmlDrawing2.vml',
+      'xl/drawings/drawing2.xml',
+      'xl/drawings/_rels/drawing2.xml.rels',
+      'xl/tables/table1.xml',
+    ]) {
+      expect(before.has(part), `fixture part missing: ${part}`).toBe(true);
+    }
+
+    const wb = Workbook.read(file);
+    wb.removeWorksheet('Rich');
+    const out = wb.toBuffer();
+
+    const after = Workbook.read(out).parts();
+    expect(wb.sheetNames).toEqual(['Keep']);
+
+    // Orphans gone, together with the relationships file that pointed at them.
+    expect(after.names().filter((n) => !before.has(n))).toEqual([]);
+    for (const part of [
+      'xl/worksheets/sheet2.xml',
+      'xl/worksheets/_rels/sheet2.xml.rels',
+      'xl/comments2.xml',
+      'xl/drawings/vmlDrawing2.vml',
+      'xl/drawings/drawing2.xml',
+      'xl/drawings/_rels/drawing2.xml.rels',
+      'xl/tables/table1.xml',
+    ]) {
+      expect(after.has(part), `orphan not pruned: ${part}`).toBe(false);
+    }
+
+    // The surviving sheet keeps everything it owns — and the image it SHARES
+    // with the removed sheet, which a naive prune would have deleted.
+    for (const part of [
+      'xl/comments1.xml',
+      'xl/drawings/vmlDrawing1.vml',
+      'xl/drawings/drawing1.xml',
+      'xl/drawings/_rels/drawing1.xml.rels',
+      'xl/media/image1.png',
+    ]) {
+      expect(after.has(part), `shared/live part pruned: ${part}`).toBe(true);
+    }
+
+    // Every surviving part is byte-identical except the registration parts.
+    const changed = new Set<string>();
+    for (const name of before.names()) {
+      if (!after.has(name) || !eq(before.get(name)!, after.get(name)!)) changed.add(name);
+    }
+    expect(changed).toEqual(
+      new Set([
+        '[Content_Types].xml',
+        'xl/workbook.xml',
+        'xl/_rels/workbook.xml.rels',
+        ...['xl/worksheets/sheet2.xml', 'xl/worksheets/_rels/sheet2.xml.rels', 'xl/comments2.xml',
+          'xl/drawings/vmlDrawing2.vml', 'xl/drawings/drawing2.xml',
+          'xl/drawings/_rels/drawing2.xml.rels', 'xl/tables/table1.xml'],
+      ]),
+    );
+
+    // The shared image survived byte-for-byte; nothing else moved.
+    expect(eq(before.get('xl/media/image1.png')!, after.get('xl/media/image1.png')!)).toBe(true);
+
+    expectCoherentPackage(out);
+    const sjs = XLSX.read(out, { type: 'buffer' });
+    expect(sjs.SheetNames).toEqual(['Keep']);
+    expect(sjs.Sheets.Keep!.A1.v).toBe('keep me');
+    const ejs = await loadInExcelJs(out);
+    expect(ejs.worksheets.map((sheet) => sheet.name)).toEqual(['Keep']);
+    expect(ejs.getWorksheet('Keep')!.getCell('A1').value).toBe('keep me');
+  });
+
+  it('removes the content-type Overrides of the dropped parts and keeps the ones still used', async () => {
+    const wb = Workbook.read(await buildSatelliteFile());
+    wb.removeWorksheet('Rich');
+    const ct = Workbook.read(wb.toBuffer()).contentTypes();
+
+    for (const part of [
+      '/xl/comments2.xml',
+      '/xl/drawings/drawing2.xml',
+      '/xl/tables/table1.xml',
+      '/xl/worksheets/sheet2.xml',
+    ]) {
+      expect(ct.overrides.has(part), `override left behind: ${part}`).toBe(false);
+    }
+    // Still used by the surviving sheet, so still declared.
+    expect(ct.overrides.has('/xl/comments1.xml')).toBe(true);
+    expect(ct.overrides.has('/xl/drawings/drawing1.xml')).toBe(true);
+    expect(contentTypeOf(ct, '/xl/media/image1.png')).toBe('image/png');
+    expect(ct.defaults.get('png')).toBe('image/png'); // image1.png survives
+    expect(ct.defaults.get('vml')).toBeTruthy(); // vmlDrawing1.vml survives
+    expect(ct.defaults.get('rels')).toBeTruthy();
+  });
+
+  it('drops a Default content type once no surviving part needs that extension', async () => {
+    const file = await buildLoneImageFile();
+    const wb = Workbook.read(file);
+    wb.removeWorksheet('Rich');
+    const out = wb.toBuffer();
+
+    const parts = Workbook.read(out).parts();
+    expect(parts.has('xl/media/image1.png')).toBe(false);
+    expect(parts.has('xl/drawings/drawing1.xml')).toBe(false);
+    expect(parts.has('xl/drawings/_rels/drawing1.xml.rels')).toBe(false);
+    expect(parts.has('xl/drawings/vmlDrawing1.vml')).toBe(false);
+
+    const ct = Workbook.read(out).contentTypes();
+    expect(ct.defaults.has('png')).toBe(false);
+    expect(ct.defaults.has('vml')).toBe(false);
+    expect(ct.defaults.has('rels')).toBe(true);
+    expectCoherentPackage(out);
+
+    const sjs = XLSX.read(out, { type: 'buffer' });
+    expect(sjs.SheetNames).toEqual(['Keep']);
+    const ejs = await loadInExcelJs(out);
+    expect(ejs.worksheets.map((sheet) => sheet.name)).toEqual(['Keep']);
+  });
+
+  it('keeps a drawing shared with another sheet, and everything that drawing references', async () => {
+    const file = makeSharedDrawingPackage();
+    const wb = Workbook.read(file);
+    wb.removeWorksheet('Two');
+    const out = wb.toBuffer();
+
+    const before = Workbook.read(file).parts();
+    const after = Workbook.read(out).parts();
+    // The whole shared subtree survives — the drawing, its chart, the chart's
+    // own colour-style part and the image.
+    for (const part of [
+      'xl/drawings/drawing1.xml',
+      'xl/drawings/_rels/drawing1.xml.rels',
+      'xl/charts/chart1.xml',
+      'xl/charts/_rels/chart1.xml.rels',
+      'xl/charts/colors1.xml',
+      'xl/media/image1.png',
+    ]) {
+      expect(after.has(part), `shared part pruned: ${part}`).toBe(true);
+    }
+    expect(after.has('xl/worksheets/sheet2.xml')).toBe(false);
+    expect(after.has('xl/worksheets/_rels/sheet2.xml.rels')).toBe(false);
+
+    const changed = new Set<string>();
+    for (const name of before.names()) {
+      if (!after.has(name) || !eq(before.get(name)!, after.get(name)!)) changed.add(name);
+    }
+    expect(changed).toEqual(
+      new Set([
+        '[Content_Types].xml',
+        'xl/workbook.xml',
+        'xl/_rels/workbook.xml.rels',
+        'xl/worksheets/sheet2.xml',
+        'xl/worksheets/_rels/sheet2.xml.rels',
+      ]),
+    );
+
+    const ct = Workbook.read(out).contentTypes();
+    expect(ct.overrides.has('/xl/worksheets/sheet2.xml')).toBe(false);
+    expect(ct.overrides.has('/xl/drawings/drawing1.xml')).toBe(true);
+    expect(ct.overrides.has('/xl/charts/chart1.xml')).toBe(true);
+    expect(ct.defaults.has('png')).toBe(true);
+
+    expectCoherentPackage(out);
+    const sjs = XLSX.read(out, { type: 'buffer' });
+    expect(sjs.SheetNames).toEqual(['One']);
+    expect(sjs.Sheets.One!.A1.v).toBe(1);
+    // (ExcelJS cannot load the hand-built minimal drawing — it is a fixture
+    // shape only; the ExcelJS-built fixtures above cover the cross-read.)
+  });
+
+  it('keeps the orphans when prune is disabled (historical behaviour)', async () => {
+    const file = await buildSatelliteFile();
+    const wb = Workbook.read(file);
+    wb.removeWorksheet('Rich', { prune: false });
+    const out = wb.toBuffer();
+
+    const before = Workbook.read(file).parts();
+    const after = Workbook.read(out).parts();
+    for (const part of ['xl/comments2.xml', 'xl/drawings/vmlDrawing2.vml', 'xl/drawings/drawing2.xml', 'xl/tables/table1.xml']) {
+      expect(eq(before.get(part)!, after.get(part)!), `orphan must survive: ${part}`).toBe(true);
+    }
+    expect(after.has('xl/worksheets/sheet2.xml')).toBe(false);
+    expect(after.has('xl/worksheets/_rels/sheet2.xml.rels')).toBe(false);
+
+    // Only the registration parts changed.
+    const changed = new Set<string>();
+    for (const name of before.names()) {
+      if (!after.has(name) || !eq(before.get(name)!, after.get(name)!)) changed.add(name);
+    }
+    expect(changed).toEqual(
+      new Set([
+        '[Content_Types].xml',
+        'xl/workbook.xml',
+        'xl/_rels/workbook.xml.rels',
+        'xl/worksheets/sheet2.xml',
+        'xl/worksheets/_rels/sheet2.xml.rels',
+      ]),
+    );
+    expectCoherentPackage(out);
+    expect(XLSX.read(out, { type: 'buffer' }).SheetNames).toEqual(['Keep']);
+  });
+
+  it('prunes nothing when the removed sheet owns nothing', async () => {
+    const file = await buildExcelJsFile();
+    const wb = Workbook.read(file);
+    wb.removeWorksheet('Config');
+    const out = wb.toBuffer();
+
+    const before = Workbook.read(file).parts();
+    const after = Workbook.read(out).parts();
+    const changed = new Set<string>();
+    for (const name of before.names()) {
+      if (!after.has(name) || !eq(before.get(name)!, after.get(name)!)) changed.add(name);
+    }
+    expect(changed).toEqual(
+      new Set(['[Content_Types].xml', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels', 'xl/worksheets/sheet2.xml']),
+    );
+  });
+
+  it('still rejects the last sheet — with pruning on — and leaves the package untouched', async () => {
+    const file = await buildSatelliteFile();
+    const wb = Workbook.read(file);
+    wb.removeWorksheet('Rich');
+    try {
+      wb.removeWorksheet('Keep');
+      expect.unreachable();
+    } catch (error) {
+      expect((error as SheetLiteError).code).toBe('LAST_SHEET');
+    }
+    // The rejected call pruned nothing extra: Keep's own satellite parts stay.
+    const out = wb.toBuffer();
+    const parts = Workbook.read(out).parts();
+    expect(wb.sheetNames).toEqual(['Keep']);
+    for (const part of ['xl/comments1.xml', 'xl/drawings/drawing1.xml', 'xl/media/image1.png']) {
+      expect(parts.has(part), `part pruned by a rejected removal: ${part}`).toBe(true);
+    }
   });
 });
 
@@ -678,5 +1063,123 @@ describe('sheets — preservation invariants', () => {
     expect(reread.sheetNames).toEqual(['Data', 'Config']);
     expect(reread.getWorksheet('Data')!.getCell('A1').value).toBe('Hello');
     expectCoherentPackage(out);
+  });
+});
+
+describe('sheets — column width validation', () => {
+  /** Excel stores widths in 0-255; anything else makes Excel offer a repair. */
+  const REJECTED: Array<[string, number]> = [
+    ['a negative width', -1],
+    ['NaN', Number.NaN],
+    ['a width above 255', 256],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['-Infinity', Number.NEGATIVE_INFINITY],
+  ];
+
+  for (const [label, width] of REJECTED) {
+    it(`rejects ${label} (${String(width)}) as a column width with BAD_COLUMN_WIDTH`, async () => {
+      const wb = Workbook.read(await buildExcelJsFile());
+      const col = wb.getWorksheet('Data')!.getColumn(3);
+
+      expect(() => {
+        col.width = width;
+      }).toThrow(SheetLiteError);
+      try {
+        col.width = width;
+        expect.unreachable(`width ${width} was accepted`);
+      } catch (error) {
+        expect((error as SheetLiteError).code).toBe('BAD_COLUMN_WIDTH');
+        expect((error as SheetLiteError).message).toBe(`Invalid column width ${width}: must be a number 0-255`);
+      }
+      // The rejected value must not have leaked into the sheet.
+      expect(Workbook.read(wb.toBuffer()).getWorksheet('Data')!.getColumn(3).width).toBeUndefined();
+    });
+  }
+
+  it('accepts the whole 0-255 range and still clears with undefined', async () => {
+    const file = await buildExcelJsFile();
+    for (const width of [0, 8.43, 12, 255]) {
+      const wb = Workbook.read(file);
+      wb.getWorksheet('Data')!.getColumn(3).width = width;
+      const reread = Workbook.read(wb.toBuffer()).getWorksheet('Data')!.getColumn(3);
+      expect(reread.width).toBe(width);
+      expect(() => XLSX.read(wb.toBuffer(), { type: 'buffer' })).not.toThrow();
+    }
+
+    const wb = Workbook.read(file);
+    const col = wb.getWorksheet('Data')!.getColumn(3);
+    col.width = 20;
+    col.width = undefined;
+    expect(Workbook.read(wb.toBuffer()).getWorksheet('Data')!.getColumn(3).width).toBeUndefined();
+  });
+});
+
+describe('wrong-format containers are rejected honestly', () => {
+  /** A legacy OLE2/CFB header (`D0 CF 11 E0 A1 B1 1A E1`) followed by filler. */
+  const ole2 = (): Uint8Array =>
+    new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, ...new Array(600).fill(0x42)]);
+
+  const OLE2_MESSAGE =
+    'Not an XLSX package: OLE2 compound file (legacy .xls or encrypted OOXML); sheet-lite reads .xlsx/.xlsm only';
+
+  const errorOf = (fn: () => unknown): SheetLiteError => {
+    let thrown: unknown;
+    try {
+      fn();
+    } catch (caught) {
+      thrown = caught;
+    }
+    expect(thrown, 'the input was accepted — it must be refused cleanly').toBeInstanceOf(SheetLiteError);
+    return thrown as SheetLiteError;
+  };
+
+  it('Workbook.read names an OLE2 compound file instead of blaming security', () => {
+    const error = errorOf(() => Workbook.read(ole2()));
+    expect(error.code).toBe('NOT_XLSX');
+    expect(error.message).toBe(OLE2_MESSAGE);
+  });
+
+  it('StreamingWorkbook.open rejects the same container with the same error', async () => {
+    const error = await StreamingWorkbook.open(ole2()).then(
+      () => expect.unreachable('the input was accepted'),
+      (caught: unknown) => {
+        expect(caught).toBeInstanceOf(SheetLiteError);
+        return caught as SheetLiteError;
+      },
+    );
+    expect(error.code).toBe('NOT_XLSX');
+    expect(error.message).toBe(OLE2_MESSAGE);
+  });
+
+  it('a binary .xlsb workbook is named, not blamed on a missing part', async () => {
+    const xlsb = zipSync({
+      '[Content_Types].xml': strToU8('<Types/>'),
+      'xl/workbook.bin': new Uint8Array([0x00, 0x01, 0x02]),
+    });
+    const expected =
+      'Not an XLSX package: binary Excel workbook (.xlsb); sheet-lite reads .xlsx/.xlsm only';
+    expect(errorOf(() => Workbook.read(xlsb)).message).toBe(expected);
+
+    // The streaming reader shares readPackageMeta, so it must agree.
+    const streamed = await StreamingWorkbook.open(xlsb).then(
+      () => expect.unreachable('the input was accepted'),
+      (caught: unknown) => caught as SheetLiteError,
+    );
+    expect(streamed.code).toBe('NOT_XLSX');
+    expect(streamed.message).toBe(expected);
+  });
+
+  it('a ZIP that is not a spreadsheet at all is NOT_A_ZIP, not ZIP_SECURITY', () => {
+    const notXlsx = zipSync({ 'readme.txt': strToU8('hello') });
+    const error = errorOf(() => Workbook.read(notXlsx));
+    expect(error.code).toBe('NOT_XLSX');
+    expect(error.message).toBe('Not an XLSX package: missing xl/workbook.xml');
+
+    const notAZip = errorOf(() => Workbook.read(strToU8('this is definitely not a zip file')));
+    expect(notAZip.code).toBe('NOT_A_ZIP');
+    // Still an unreadable-archive error for `instanceof` handlers...
+    expect(notAZip).toBeInstanceOf(ZipSecurityError);
+    // ...but a distinct code, so wrong-format is never confused with hostile.
+    expect(notAZip.code).not.toBe('ZIP_SECURITY');
   });
 });

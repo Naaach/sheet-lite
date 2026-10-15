@@ -70,3 +70,22 @@ export interface CellStyleOverrides {
   border?: BorderProps;
   alignment?: AlignmentProps;
 }
+
+/**
+ * Merge a style patch over an existing one, property by property (a `font`
+ * patch only replaces the font fields it names, it never drops the others).
+ * Shared by the incremental writer, where a row-level patch and a cell-level
+ * patch combine.
+ */
+export function mergeStylePatch(
+  base: CellStyleOverrides,
+  patch: CellStyleOverrides,
+): CellStyleOverrides {
+  const out: CellStyleOverrides = { ...base };
+  if (patch.numFmt !== undefined) out.numFmt = patch.numFmt;
+  if (patch.font) out.font = { ...out.font, ...patch.font };
+  if (patch.fill) out.fill = { ...out.fill, ...patch.fill };
+  if (patch.border) out.border = { ...out.border, ...patch.border };
+  if (patch.alignment) out.alignment = { ...out.alignment, ...patch.alignment };
+  return out;
+}

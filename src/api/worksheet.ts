@@ -203,6 +203,12 @@ export class Worksheet {
   }
 
   setColumnWidth(col: number, width: number | undefined): void {
+    // Excel's own range is 0-255: anything else (NaN, negative, non-finite,
+    // > 255) is written straight into `<col width="..">` and makes Excel
+    // offer to repair the file. `undefined` still clears the width.
+    if (width !== undefined && !(width >= 0 && width <= 255)) {
+      throw new SheetLiteError(`Invalid column width ${width}: must be a number 0-255`, 'BAD_COLUMN_WIDTH');
+    }
     this.mergeColEdit(col, { width: width === undefined ? null : width });
   }
 

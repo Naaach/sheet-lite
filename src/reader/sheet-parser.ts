@@ -1,8 +1,11 @@
 import { parseXml, child, childrenOf, textOf, type XmlNode } from '../xml/xml';
+import { columnToNumber, coordsToRef, numberToColumn, refToCoords } from '../model/refs';
 import { serialToDate } from '../model/dates';
 import { typeOf, type CellValue, type ValueTypeName } from '../model/value';
 import { parseInlineRichText } from './rich-text';
 import type { PackageMeta } from './package-reader';
+
+export { columnToNumber, coordsToRef, numberToColumn, refToCoords };
 
 export interface CellRecord {
   ref: string;
@@ -92,33 +95,6 @@ export interface ParsedSheet {
   mergeChildren: MergeChild[];
   maxRow: number;
   maxCol: number;
-}
-
-export function columnToNumber(letters: string): number {
-  let n = 0;
-  for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
-  return n;
-}
-
-export function numberToColumn(n: number): string {
-  let s = '';
-  let value = n;
-  while (value > 0) {
-    const rem = (value - 1) % 26;
-    s = String.fromCharCode(65 + rem) + s;
-    value = Math.floor((value - 1) / 26);
-  }
-  return s;
-}
-
-export function refToCoords(ref: string): { row: number; col: number } {
-  const match = /^([A-Za-z]+)(\d+)$/.exec(ref);
-  if (!match) return { row: 0, col: 0 };
-  return { row: Number(match[2]), col: columnToNumber(match[1]!) };
-}
-
-export function coordsToRef(row: number, col: number): string {
-  return `${numberToColumn(col)}${row}`;
 }
 
 function computeValue(c: XmlNode, meta: PackageMeta): CellValue {

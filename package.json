@@ -21,6 +21,11 @@
       "import": "./dist/stream.mjs",
       "require": "./dist/stream.cjs"
     },
+    "./write": {
+      "types": "./dist/write.d.mts",
+      "import": "./dist/write.mjs",
+      "require": "./dist/write.cjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -38,6 +43,7 @@
     "test:watch": "vitest",
     "bench": "tsdown && node scripts/bench.mjs",
     "bench:stream": "tsdown && node --expose-gc scripts/bench-stream.mjs",
+    "bench:write": "tsdown && node --expose-gc scripts/bench-write.mjs",
     "size": "node scripts/size.mjs",
     "validate:corpus": "tsdown && node scripts/validate-corpus.mjs",
     "typecheck": "tsc --noEmit",

@@ -12,6 +12,7 @@
  * so it can be re-serialized byte-for-byte.
  */
 import type { ReadLimits } from '../zip/raw';
+import { assertNotCompoundFile } from '../zip/raw';
 import {
   BufferByteSource,
   FileByteSource,
@@ -32,6 +33,10 @@ const toPartKey = (partName: string): string => partName.replace(/^\//, '');
 /** Parts read eagerly by `open()`; everything else stays on disk until streamed. */
 const SMALL_PARTS = [
   'xl/workbook.xml',
+  // Only present in `.xlsb` packages; reading it (when it exists at all) lets
+  // `readPackageMeta` name the binary format instead of a missing part, so
+  // the streaming reader refuses `.xlsb` exactly like the eager one does.
+  'xl/workbook.bin',
   'xl/_rels/workbook.xml.rels',
   'xl/sharedStrings.xml',
   'xl/styles.xml',
@@ -85,6 +90,8 @@ export class StreamingWorkbook {
       // Node-only: dynamic import keeps `node:` out of the static dependency graph.
       const fileSource = await FileByteSource.open(input);
       try {
+        // A legacy `.xls` / encrypted OOXML container is not a broken archive.
+        assertNotCompoundFile(await fileSource.read(0, 8));
         return await StreamingWorkbook.fromSource(fileSource, limits, fileSource);
       } catch (error) {
         await fileSource.close();
@@ -97,6 +104,7 @@ export class StreamingWorkbook {
         : ArrayBuffer.isView(input)
           ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
           : new Uint8Array(input);
+    assertNotCompoundFile(bytes);
     return StreamingWorkbook.fromSource(new BufferByteSource(bytes), limits, null);
   }
 

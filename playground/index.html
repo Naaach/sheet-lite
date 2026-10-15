@@ -71,6 +71,10 @@
               <dd id="inspFont">—</dd>
               <dt>Fill</dt>
               <dd id="inspFill">—</dd>
+              <dt>Border</dt>
+              <dd class="mono wrap" id="inspBorder">—</dd>
+              <dt>Alignment</dt>
+              <dd id="inspAlignment">—</dd>
             </dl>
           </section>
 
@@ -83,6 +87,64 @@
               <button class="btn btn-wide" id="btnAddRow" type="button" title="sheet.addRow([...]) — appends values, a formula and a date via the public API">Add row</button>
               <button class="btn" id="btnMerge" type="button">Merge A1:B1</button>
               <button class="btn" id="btnUnmerge" type="button" disabled>Unmerge A1:B1</button>
+              <button class="btn" id="btnAlignLeft" type="button" title="cell.alignment = { horizontal: 'left' }">Align left</button>
+              <button class="btn" id="btnAlignCenter" type="button" title="cell.alignment = { horizontal: 'center' }">Align center</button>
+              <button class="btn" id="btnAlignRight" type="button" title="cell.alignment = { horizontal: 'right' }">Align right</button>
+              <button class="btn" id="btnWrap" type="button" title="cell.alignment = { wrapText: !wrapText }">Wrap text</button>
+              <button class="btn" id="btnBoxBorder" type="button" title="cell.border = { top/right/bottom/left: { style: 'thin' } }">Box border</button>
+              <button class="btn" id="btnEdgeBorder" type="button" title="cell.border = { bottom: { style: 'double' } } — a single side merges over the current border, existing sides are kept">Bottom border</button>
+              <button class="btn btn-wide" id="btnRichText" type="button" title="cell.value = { richText: [{ text, font }, ...] } — written as inline &lt;r&gt; runs on save">Write rich text</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Sheet structure</h2>
+            <p class="hint">Worksheet API on <span id="structSheet" class="mono">—</span></p>
+
+            <div class="fields">
+              <div class="field-row">
+                <input class="input" id="newSheetName" type="text" maxlength="31" placeholder="Sheet1" aria-label="New sheet name" />
+                <button class="btn" id="btnAddSheet" type="button" title="wb.addWorksheet(name) — registers the sheet part, rel, &lt;sheet&gt; entry and content-type override">Add sheet</button>
+              </div>
+              <button class="btn btn-block" id="btnRemoveSheet" type="button" title="wb.removeWorksheet(name)">Remove this sheet</button>
+            </div>
+
+            <div class="rule"></div>
+
+            <div class="fields">
+              <div class="field-row">
+                <span class="field">Column</span>
+                <input class="input input-mini" id="colNumber" type="number" min="1" max="16384" step="1" value="1" aria-label="Column number" />
+                <input class="input input-mini" id="colWidth" type="number" min="0" max="255" step="0.5" placeholder="width" aria-label="Column width in characters" />
+                <label class="check"><input type="checkbox" id="colHidden" /> hidden</label>
+                <button class="btn btn-mini" id="btnColumn" type="button" title="ws.getColumn(n).width / .hidden — persisted through &lt;cols&gt;, ranges are split instead of overwritten">Apply</button>
+              </div>
+              <p class="field-state mono" id="colState">—</p>
+
+              <div class="field-row">
+                <span class="field">Row</span>
+                <input class="input input-mini" id="rowNumber" type="number" min="1" step="1" value="1" aria-label="Row number" />
+                <input class="input input-mini" id="rowHeight" type="number" min="0" max="409" step="1" placeholder="height" aria-label="Row height in points" />
+                <button class="btn btn-mini" id="btnRowHeight" type="button" title="ws.getRow(n).height — only the row's opening tag is patched">Apply</button>
+              </div>
+              <p class="field-state mono" id="rowState">—</p>
+            </div>
+
+            <div class="rule"></div>
+
+            <div class="fields">
+              <div class="field-row">
+                <span class="field">Freeze</span>
+                <input class="input input-mini" id="freezeX" type="number" min="0" step="1" value="1" aria-label="Frozen columns (xSplit)" />
+                <span class="field-suffix">cols</span>
+                <input class="input input-mini" id="freezeY" type="number" min="0" step="1" value="1" aria-label="Frozen rows (ySplit)" />
+                <span class="field-suffix">rows</span>
+              </div>
+              <div class="field-row">
+                <button class="btn btn-mini btn-grow" id="btnFreeze" type="button" title="ws.views = [{ state: 'frozen', xSplit, ySplit }] — &lt;pane&gt; is patched in place">Freeze panes</button>
+                <button class="btn btn-mini btn-grow" id="btnUnfreeze" type="button" title="ws.views = [{ state: 'normal' }]">Unfreeze</button>
+              </div>
+              <p class="field-state mono" id="viewsState">—</p>
             </div>
           </section>
 
