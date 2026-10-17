@@ -1,0 +1,96 @@
+name: Publish to GitHub Packages
+
+# Manual, opt-in publishing to the GitHub Packages npm registry, IN ADDITION to
+# the npmjs.org release (`release.yml`). Nothing here runs on push, so a green
+# CI run can never publish by accident.
+#
+# GitHub Packages requires the package name to be SCOPED to the repository
+# owner, so this workflow publishes the same build under `@Naaach/sheet-lite`
+# (the npmjs.org release keeps the unscoped `sheet-lite`). The name is rewritten
+# on the runner only — `package.json` in the repo is never changed.
+#
+# Auth uses the built-in `GITHUB_TOKEN` (permission `packages: write`), so no
+# extra secret is needed. `dry_run` defaults to true: the first runs only
+# package and validate the tarball.
+#
+# The package shows up under the repository's "Packages" section because
+# `package.json` already declares `repository` = github.com/Naaach/sheet-lite.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run only (do not publish to GitHub Packages)"
+        type: boolean
+        default: true
+      ref:
+        description: "Git ref to publish (branch, tag or SHA). Defaults to the current default branch."
+        type: string
+        default: main
+
+permissions:
+  contents: read
+  packages: write # publish to the GitHub Packages npm registry
+
+jobs:
+  publish:
+    name: Build & publish to GitHub Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      # `registry-url` + `scope` make actions/setup-node write a user-level
+      # .npmrc (outside the repo) that routes `@Naaach/*` to GitHub Packages and
+      # authenticates with NODE_AUTH_TOKEN. pnpm 12 ignores ${ENV} placeholders
+      # in the repository's own .npmrc, which is why we rely on this one.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: "@Naaach"
+
+      - name: Configure pnpm
+        run: pnpm config set verify-store-integrity false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Same gates as CI: never publish something that would fail CI.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      # GitHub Packages needs a scoped name; `provenance` is an npmjs.org-only
+      # feature, so it is turned off for this registry. Both edits are local to
+      # the runner.
+      - name: Scope the package for GitHub Packages
+        run: |
+          npm pkg set name="@Naaach/sheet-lite"
+          npm pkg set publishConfig.provenance=false
+
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run }}
+        run: npm publish --dry-run --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to GitHub Packages
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

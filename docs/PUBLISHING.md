@@ -64,6 +64,65 @@ provenance only works from GitHub Actions.
 Once the package exists on npm, you can migrate it to a **Trusted Publisher**
 (Repo: `Naaach/sheet-lite`, workflow: `release.yml`) and drop the token entirely.
 
+## Publish to GitHub Packages (in addition to npmjs)
+
+The same build can also be published to the **GitHub Packages** npm registry, so
+it appears under the repository's **Packages** section. This is a *second*
+registry, not a replacement: the npmjs.org release keeps the unscoped
+`sheet-lite` name.
+
+**The one hard rule:** GitHub Packages requires the package name to be **scoped
+to the repository owner**, so there it is published as **`@Naaach/sheet-lite`**.
+An unscoped name is rejected. The workflow rewrites the name on the runner only
+(`npm pkg set name=@Naaach/sheet-lite`); the committed `package.json` is never
+changed, so the npmjs publish is unaffected.
+
+### How to publish
+
+From GitHub → **Actions → "Publish to GitHub Packages" → Run workflow**:
+
+1. Leave `dry_run: true` first — it runs the same gates as CI (typecheck, test,
+   build) and then `npm publish --dry-run`, packaging and validating without
+   uploading anything.
+2. Run it again with `dry_run: false` to publish for real.
+
+CLI equivalent:
+
+```sh
+gh workflow run publish-github-packages.yml -f dry_run=true
+gh workflow run publish-github-packages.yml -f dry_run=false
+```
+
+### Auth
+
+No extra secret is needed: the workflow uses the built-in **`GITHUB_TOKEN`**
+with the `packages: write` permission. `actions/setup-node` (`registry-url:
+https://npm.pkg.github.com` + `scope: @Naaach`) writes the user-level `.npmrc`
+that routes `@Naaach/*` to GitHub Packages and authenticates with the token.
+
+### Consuming it
+
+```sh
+# .npmrc in the consuming project
+@naaach:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=<a token with read:packages>
+```
+
+```sh
+npm install @naaach/sheet-lite
+```
+
+```ts
+import { Workbook } from '@naaach/sheet-lite';
+```
+
+> **Notes.** (1) `provenance` is an npmjs.org-only feature, so the workflow turns
+> it off for this registry. (2) The package is linked to the repository through
+> the `repository` field in `package.json` (already set), which is what makes it
+> show up under the repo's Packages. (3) Package visibility follows the
+> repository's visibility; `--access public` is passed for the scoped-package
+> default but GitHub Packages ignores it.
+
 ## Docs & playground on Cloudflare Pages
 
 `.github/workflows/deploy-docs.yml` deploys on push to `main` (or manually):
