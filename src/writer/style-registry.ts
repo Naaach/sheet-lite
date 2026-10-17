@@ -99,6 +99,28 @@ function countEdit(xml: string, node: XmlNode, count: number): Edit {
 }
 
 /**
+ * Edits that append `entries` to a container and set its `count`.
+ *
+ * A self-closing container (`<fonts/>`) is REOPENED — the whole tag is replaced
+ * — because inserting after `/>` would leave the entries outside the element
+ * (and `countEdit` alone would leave a stray `/`). A normal container only gets
+ * its count attribute patched plus an insertion before its close tag.
+ */
+function appendEntries(xml: string, node: XmlNode, count: number, entries: string): Edit[] {
+  if (node.closeStart === node.openEnd) {
+    const body = xml.slice(node.start, node.openEnd).replace(/\/>$/, '>');
+    const withCount = /\bcount="\d+"/.test(body)
+      ? body.replace(/\bcount="\d+"/, `count="${count}"`)
+      : body.replace(/>$/, ` count="${count}">`);
+    return [{ start: node.start, end: node.end, text: `${withCount}${entries}</${node.name}>` }];
+  }
+  return [
+    countEdit(xml, node, count),
+    { start: node.closeStart, end: node.closeStart, text: entries },
+  ];
+}
+
+/**
  * Tracks and extends `xl/styles.xml` so cells can carry number formats, fonts
  * and fills. Only new entries are appended; existing ones are reused (dedup).
  */
@@ -331,8 +353,7 @@ export class StyleRegistry {
         .join('');
       if (this.numFmtsNode) {
         // numFmtById already contains the added formats.
-        edits.push(countEdit(this.xml, this.numFmtsNode, this.numFmtById.size));
-        edits.push({ start: this.numFmtsNode.closeStart, end: this.numFmtsNode.closeStart, text: entries });
+        edits.push(...appendEntries(this.xml, this.numFmtsNode, this.numFmtById.size, entries));
       } else {
         // Inserted before <fonts>. The fonts count edit below targets ONLY its
         // count attribute, so these two edits can never collide.
@@ -346,24 +367,17 @@ export class StyleRegistry {
 
     if (this.addedFonts.length > 0) {
       // fontRaws already contains the added fonts.
-      edits.push(countEdit(this.xml, this.fontsNode, this.fontRaws.length));
-      edits.push({ start: this.fontsNode.closeStart, end: this.fontsNode.closeStart, text: this.addedFonts.join('') });
+      edits.push(...appendEntries(this.xml, this.fontsNode, this.fontRaws.length, this.addedFonts.join('')));
     }
 
     if (this.addedFills.length > 0) {
-      edits.push(countEdit(this.xml, this.fillsNode, this.fillRaws.length));
-      edits.push({ start: this.fillsNode.closeStart, end: this.fillsNode.closeStart, text: this.addedFills.join('') });
+      edits.push(...appendEntries(this.xml, this.fillsNode, this.fillRaws.length, this.addedFills.join('')));
     }
 
     if (this.addedBorders.length > 0) {
       if (this.bordersNode) {
         // borderRaws already contains the added borders.
-        edits.push(countEdit(this.xml, this.bordersNode, this.borderRaws.length));
-        edits.push({
-          start: this.bordersNode.closeStart,
-          end: this.bordersNode.closeStart,
-          text: this.addedBorders.join(''),
-        });
+        edits.push(...appendEntries(this.xml, this.bordersNode, this.borderRaws.length, this.addedBorders.join('')));
       } else {
         // Container missing entirely: create it at its schema position
         // (after <fills>, before <cellStyleXfs>/<cellXfs>).
@@ -377,12 +391,7 @@ export class StyleRegistry {
     }
 
     if (this.addedXfs.length > 0) {
-      edits.push(countEdit(this.xml, this.cellXfsNode, this.xfDescs.length));
-      edits.push({
-        start: this.cellXfsNode.closeStart,
-        end: this.cellXfsNode.closeStart,
-        text: this.addedXfs.join(''),
-      });
+      edits.push(...appendEntries(this.xml, this.cellXfsNode, this.xfDescs.length, this.addedXfs.join('')));
     }
 
     edits.sort((a, b) => b.start - a.start);

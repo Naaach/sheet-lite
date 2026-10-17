@@ -389,6 +389,17 @@ function applyMergeEdits(sheet: ParsedSheet, newMerges: string[], removedMerges:
   if (container) {
     if (!hasAdd && removedMerges.length === 0) return;
     const count = present.length + newMerges.length;
+    if (container.closeStart === container.openEnd) {
+      // Self-closing <mergeCells/>: reopen it so the additions land INSIDE the
+      // element (inserting after `/>` would leave them as siblings).
+      if (!hasAdd) return; // no children to remove, nothing to add
+      const body = sheet.xml.slice(container.start, container.openEnd).replace(/\/>$/, '>');
+      const withCount = /\bcount="\d+"/.test(body)
+        ? body.replace(/\bcount="\d+"/, `count="${count}"`)
+        : body.replace(/>$/, ` count="${count}">`);
+      ops.push({ pos: container.start, end: container.end, text: `${withCount}${additions}</mergeCells>` });
+      return;
+    }
     const open = sheet.xml.slice(container.start, container.openEnd);
     const updated = /\bcount="\d+"/.test(open)
       ? open.replace(/\bcount="\d+"/, `count="${count}"`)

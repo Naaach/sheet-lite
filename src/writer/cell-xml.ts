@@ -71,12 +71,27 @@ export function generateCellXml(
   }
   if (typeof value === 'object' && 'formula' in value) {
     const { result } = value;
+    // The cached result's type must be declared exactly like a plain cell's:
+    // a string result needs `t="str"`, a boolean `t="b"` (1/0) and an error
+    // `t="e"`. Without it the reader parses the `<v>` as a number, so a
+    // written string/boolean result would read back as NaN.
+    let tAttr = '';
     let resultText = '';
-    if (result instanceof Date) resultText = String(dateToSerial(result, date1904));
-    else if (typeof result === 'number' || typeof result === 'string' || typeof result === 'boolean') {
+    if (result instanceof Date) {
+      resultText = String(dateToSerial(result, date1904));
+    } else if (typeof result === 'number') {
       resultText = String(result);
+    } else if (typeof result === 'boolean') {
+      tAttr = ' t="b"';
+      resultText = result ? '1' : '0';
+    } else if (typeof result === 'string') {
+      tAttr = ' t="str"';
+      resultText = result;
+    } else if (result && typeof result === 'object' && 'error' in result) {
+      tAttr = ' t="e"';
+      resultText = result.error;
     }
-    return `<c r="${ref}"${sAttr}><f>${escapeXml(value.formula)}</f><v>${escapeXml(resultText)}</v></c>`;
+    return `<c r="${ref}"${tAttr}${sAttr}><f>${escapeXml(value.formula)}</f><v>${escapeXml(resultText)}</v></c>`;
   }
   if (typeof value === 'object' && 'richText' in value) {
     return `<c r="${ref}" t="inlineStr"${sAttr}><is>${richTextXml(value.richText)}</is></c>`;

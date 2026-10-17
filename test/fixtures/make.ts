@@ -67,8 +67,15 @@ export function makeMinimalXlsx(): Uint8Array {
   return makeXlsxWithSheet(SHEET1);
 }
 
-/** Build a package with a custom worksheet part (for edge-case tests). */
-export function makeXlsxWithSheet(sheetXml: string, options: { level?: 0 | 6 } = {}): Uint8Array {
+/**
+ * Build a package with a custom worksheet part (for edge-case tests).
+ * `options.styles` replaces the default `xl/styles.xml` (e.g. to exercise a
+ * styles.xml with self-closing containers).
+ */
+export function makeXlsxWithSheet(
+  sheetXml: string,
+  options: { level?: 0 | 6; styles?: string } = {},
+): Uint8Array {
   return zipSync(
     {
       '[Content_Types].xml': strToU8(CONTENT_TYPES),
@@ -78,7 +85,7 @@ export function makeXlsxWithSheet(sheetXml: string, options: { level?: 0 | 6 } =
       'xl/workbook.xml': strToU8(WORKBOOK),
       'xl/_rels/workbook.xml.rels': strToU8(WORKBOOK_RELS),
       'xl/worksheets/sheet1.xml': strToU8(sheetXml),
-      'xl/styles.xml': strToU8(STYLES),
+      'xl/styles.xml': strToU8(options.styles ?? STYLES),
     },
     { level: options.level ?? 6 },
   );
